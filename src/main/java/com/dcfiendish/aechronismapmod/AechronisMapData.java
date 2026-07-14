@@ -94,10 +94,11 @@ public class AechronisMapData {
     private volatile Map<String, Integer> nationColors = new HashMap<>();
 
     // Last-applied color per territory (null/absent = currently unowned), used
-    // purely as poll-to-poll diff bookkeeping. Only ever touched from the single
-    // fetcher thread (loadTownsData runs on AechronisDataFetcher's single-thread
-    // scheduler, so no concurrent writers) — does not need its own lock.
-    private final Map<String, Integer> lastTerritoryColor = new HashMap<>();
+    // purely as poll-to-poll diff bookkeeping. Mostly touched from the fetcher
+    // thread (loadTownsData runs on AechronisDataFetcher's single-thread scheduler),
+    // but liberateTerritory() (chat-driven, runs on the client thread) also writes
+    // to it directly — so it's a ConcurrentHashMap, not a plain HashMap.
+    private final Map<String, Integer> lastTerritoryColor = new ConcurrentHashMap<>();
 
     // Grace window for chat-driven optimistic flips. When captureTerritory() flips a
     // node from a chat message, it stamps the territory id -> timestamp here. The
