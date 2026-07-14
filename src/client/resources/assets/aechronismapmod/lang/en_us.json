@@ -11,13 +11,9 @@
 
   "text.autoconfig.aechronismapmod.option.showNodeBorders": "Show Node Borders",
   "text.autoconfig.aechronismapmod.option.showNodeBorders.tooltip": "Toggle resource node territory borders on/off",
-  "text.autoconfig.aechronismapmod.option.nodeBorderOpacity": "Node Border Opacity (%)",
-  "text.autoconfig.aechronismapmod.option.nodeBorderOpacity.tooltip": "Opacity of node territory borders",
   "text.autoconfig.aechronismapmod.option.whiteBorders": "White Node Borders",
   "text.autoconfig.aechronismapmod.option.whiteBorders.tooltip": "Override all node border colors to white",
 
-  "text.autoconfig.aechronismapmod.option.occupiedDiagonalOpacity": "Occupied Diagonal Opacity (%)",
-  "text.autoconfig.aechronismapmod.option.occupiedDiagonalOpacity.tooltip": "Opacity of the diagonal line marking captured (occupied-but-not-annexed) territories, drawn in the occupier's nation color",
   "text.autoconfig.aechronismapmod.option.occupiedDiagonalWidth": "Occupied Diagonal Width",
   "text.autoconfig.aechronismapmod.option.occupiedDiagonalWidth.tooltip": "Line width of the occupied-territory diagonal marker",
 
@@ -31,8 +27,5 @@
   "text.autoconfig.aechronismapmod.option.showNationLabels.tooltip": "Toggle nation name labels (shown larger, at each nation's capital) on/off",
 
   "text.autoconfig.aechronismapmod.option.showPorts": "Show Ports",
-  "text.autoconfig.aechronismapmod.option.showPorts.tooltip": "Toggle port markers (name labels, colored by teleport group) on/off",
-
-  "text.autoconfig.aechronismapmod.option.showPortConnections": "Show Port Connections",
-  "text.autoconfig.aechronismapmod.option.showPortConnections.tooltip": "Toggle lines connecting ports in the same teleport group on/off"
+  "text.autoconfig.aechronismapmod.option.showPorts.tooltip": "Toggle port markers (name labels, colored by teleport group) on/off"
 }

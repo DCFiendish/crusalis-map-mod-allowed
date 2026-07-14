@@ -1,7 +1,5 @@
-package com.example;
+package com.dcfiendish.aechronismapmod;
 
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -10,10 +8,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 public class AechronisDataFetcher {
@@ -23,7 +20,6 @@ public class AechronisDataFetcher {
     private static final String PORTS_URL     = "https://map.crusalis.net/nodes/ports.json";
     private static final String MAP_REFERER   = "https://map.crusalis.net/";
     private static final String GIST_URL      = "https://gist.githubusercontent.com/DCFiendish/a0989e75d3d6dadb9a2af6254232a350/raw/nation_colors.json";
-    private static final String WHITELIST_URL = "https://gist.githubusercontent.com/DCFiendish/9853abe237d1fee0818ec540ef92e0d0/raw/whitelist.json";
 
     public AechronisMapData mapData;
 
@@ -33,65 +29,81 @@ public class AechronisDataFetcher {
         return t;
     });
 
-    public void start() {
-        scheduler.schedule(this::fetchWhitelist, 0, TimeUnit.SECONDS);
-        scheduler.schedule(this::fetchGistColors, 0, TimeUnit.SECONDS);
-        scheduler.schedule(this::fetchWorldAndTerritories, 2, TimeUnit.SECONDS);
-        scheduler.schedule(this::fetchPorts, 3, TimeUnit.SECONDS);
-        scheduler.scheduleAtFixedRate(this::fetchTownsJson, 5, 60, TimeUnit.SECONDS);
+    // Nothing below fires until onJoinCrusalis() is called — this mod must not phone
+    // home to Crusalis's infrastructure for players who never connect there (thousands
+    // of installs mostly playing elsewhere would otherwise generate constant unwanted
+    // background traffic against a specific third party's server).
+    private volatile boolean oneTimeDataFetched = false;
+    private volatile ScheduledFuture<?> townsPollFuture;
+
+    /**
+     * Called by AechronisMapMod's JOIN handler once a Crusalis connection is confirmed.
+     * Idempotent and safe to call on every join (including backend/proxy transfers that
+     * re-fire JOIN without an intervening DISCONNECT): the one-time fetches (gist colors,
+     * world+ports geometry — static-ish, no need to refresh on reconnect) only ever run
+     * once per client session, and the recurring towns.json poll is only (re)started if
+     * it isn't already running.
+     */
+    public synchronized void onJoinCrusalis() {
+        if (!oneTimeDataFetched) {
+            oneTimeDataFetched = true;
+            scheduler.schedule(this::fetchGistColors, 0, TimeUnit.SECONDS);
+            scheduler.schedule(this::fetchWorldAndTerritories, 2, TimeUnit.SECONDS);
+            scheduler.schedule(this::fetchPorts, 3, TimeUnit.SECONDS);
+        }
+        if (townsPollFuture == null || townsPollFuture.isCancelled()) {
+            townsPollFuture = scheduler.scheduleAtFixedRate(this::fetchTownsJson, 5, 60, TimeUnit.SECONDS);
+        }
     }
 
-    private void fetchWhitelist() {
-        try {
-            System.out.println("[Aechronis] Fetching whitelist...");
-            String json = fetch(WHITELIST_URL);
-            JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
-            JsonArray list = obj.getAsJsonArray("whitelist");
-            Set<String> uuids = new HashSet<>();
-            for (JsonElement e : list) uuids.add(e.getAsString().toLowerCase());
-            mapData.whitelistedUuids = uuids;
-            System.out.println("[Aechronis] Whitelist loaded: " + uuids.size() + " entries");
-        } catch (Exception e) {
-            System.out.println("[Aechronis] Whitelist fetch error: " + e.getMessage());
+    /**
+     * Called on leaving Crusalis (disconnect, or JOIN resolving to a different/no
+     * server) — cancels the recurring towns.json poll so the mod goes fully quiet
+     * until the player reconnects. One-time data stays cached, not cleared.
+     */
+    public synchronized void onLeaveCrusalis() {
+        if (townsPollFuture != null) {
+            townsPollFuture.cancel(false);
+            townsPollFuture = null;
         }
     }
 
     private void fetchGistColors() {
         try {
-            System.out.println("[Aechronis] Fetching nation color overrides from Gist...");
+            System.out.println("[Crusalis] Fetching nation color overrides from Gist...");
             String json = fetch(GIST_URL);
             JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
             mapData.loadGistColors(obj);
-            System.out.println("[Aechronis] Gist colors loaded.");
+            System.out.println("[Crusalis] Gist colors loaded.");
         } catch (Exception e) {
-            System.out.println("[Aechronis] Gist fetch error: " + e.getMessage());
+            System.out.println("[Crusalis] Gist fetch error: " + e.getMessage());
         }
     }
 
     private void fetchWorldAndTerritories() {
         try {
-            System.out.println("[Aechronis] Fetching world.json and towns.json for territory data...");
+            System.out.println("[Crusalis] Fetching world.json and towns.json for territory data...");
             String worldStr = fetch(WORLD_URL);
             String townsStr = fetch(TOWNS_URL);
             JsonObject worldJson = JsonParser.parseString(worldStr).getAsJsonObject();
             JsonObject townsJson = JsonParser.parseString(townsStr).getAsJsonObject();
             mapData.loadWorldData(worldJson);
             mapData.loadTownsData(townsJson, townsStr);
-            System.out.println("[Aechronis] World and territory data loaded.");
+            System.out.println("[Crusalis] World and territory data loaded.");
         } catch (Exception e) {
-            System.out.println("[Aechronis] World fetch error: " + e.getMessage());
+            System.out.println("[Crusalis] World fetch error: " + e.getMessage());
         }
     }
 
     private void fetchPorts() {
         try {
-            System.out.println("[Aechronis] Fetching ports.json...");
+            System.out.println("[Crusalis] Fetching ports.json...");
             String json = fetch(PORTS_URL);
             JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
             mapData.loadPortData(obj);
-            System.out.println("[Aechronis] Ports loaded.");
+            System.out.println("[Crusalis] Ports loaded.");
         } catch (Exception e) {
-            System.out.println("[Aechronis] Ports fetch error: " + e.getMessage());
+            System.out.println("[Crusalis] Ports fetch error: " + e.getMessage());
         }
     }
 
@@ -101,7 +113,7 @@ public class AechronisDataFetcher {
             JsonObject townsJson = JsonParser.parseString(json).getAsJsonObject();
             mapData.loadTownsData(townsJson, json);
         } catch (Exception e) {
-            System.out.println("[Aechronis] Towns fetch error: " + e.getMessage());
+            System.out.println("[Crusalis] Towns fetch error: " + e.getMessage());
         }
     }
 

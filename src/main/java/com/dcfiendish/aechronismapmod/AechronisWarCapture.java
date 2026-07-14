@@ -1,4 +1,4 @@
-package com.example;
+package com.dcfiendish.aechronismapmod;
 
 import net.fabricmc.loader.api.FabricLoader;
 
@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *      chat-driven flip, so it can be correlated against the chat transcript and the
  *      poll summaries to answer "what did the mod think was happening, and when."
  *
- * Output lands in <game dir>/aechronis-warcapture/:
+ * Output lands in <game dir>/crusalis-warcapture/:
  *   chat.log        — every [War] line seen, timestamped.
  *   first-seen.log  — first occurrence of each distinct message SHAPE this session
  *                      (numbers collapsed to '#'), for confirming regexes against
@@ -36,7 +36,7 @@ public final class AechronisWarCapture {
 
     public static final boolean ENABLED = false;
 
-    private static final Path DIR = FabricLoader.getInstance().getGameDir().resolve("aechronis-warcapture");
+    private static final Path DIR = FabricLoader.getInstance().getGameDir().resolve("crusalis-warcapture");
     private static final Path CHAT_LOG = DIR.resolve("chat.log");
     private static final Path STATE_LOG = DIR.resolve("state.log");
     private static final Path FIRST_SEEN_LOG = DIR.resolve("first-seen.log");
@@ -73,7 +73,7 @@ public final class AechronisWarCapture {
                 String filename = Instant.now().toString().replace(":", "-") + "_" + reason + ".json";
                 Files.writeString(SNAPSHOT_DIR.resolve(filename), rawJson);
             } catch (IOException e) {
-                System.out.println("[Aechronis] WarCapture snapshot failed: " + e.getMessage());
+                System.out.println("[Crusalis] WarCapture snapshot failed: " + e.getMessage());
             }
         }
     }
@@ -84,7 +84,7 @@ public final class AechronisWarCapture {
             Files.writeString(file, "[" + Instant.now() + "] " + line + System.lineSeparator(),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
-            System.out.println("[Aechronis] WarCapture log failed: " + e.getMessage());
+            System.out.println("[Crusalis] WarCapture log failed: " + e.getMessage());
         }
     }
 

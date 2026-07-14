@@ -1,4 +1,4 @@
-package com.example;
+package com.dcfiendish.aechronismapmod;
 
 import com.google.gson.*;
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
@@ -56,13 +56,10 @@ public class AechronisMapData {
     // USERNAME from chat (see AechronisChatListener) to a nation color — the
     // chat broadcast never contains a town name, only the acting player's name.
     public volatile Map<String, String> playerNationMap = new HashMap<>();
-    public volatile Set<String> whitelistedUuids = new HashSet<>();
 
     // ── Ports (from ports.json, fetched ONCE — ports are static) ────────────
-    // Each port: name + (x,z) + group ids. Markers/labels colored by group; optional
-    // connection lines drawn between same-group ports. Built once in loadPortData().
+    // Each port: name + (x,z) + group ids, colored by group. Built once in loadPortData().
     public volatile List<PortInfo> ports = new ArrayList<>();
-    public volatile List<PortConnection> portConnections = new ArrayList<>();
 
     // ── Occupation / annexation (captured-but-not-annexed) tracking ─────────
     // Per Nodes plugin mechanics (confirmed via https://nodes.soy/4-2-diplomacy-war.html):
@@ -125,12 +122,12 @@ public class AechronisMapData {
                 JsonArray c = val.getAsJsonArray();
                 if (c.size() >= 3) {
                     newGistColors.put(nation, rgb(c.get(0).getAsInt(), c.get(1).getAsInt(), c.get(2).getAsInt()));
-                    System.out.println("[Aechronis] Gist color override: " + nation);
+                    System.out.println("[Crusalis] Gist color override: " + nation);
                 }
             }
         }
         this.gistColors = newGistColors;
-        System.out.println("[Aechronis] Loaded " + newGistColors.size() + " Gist color overrides");
+        System.out.println("[Crusalis] Loaded " + newGistColors.size() + " Gist color overrides");
     }
 
     /**
@@ -149,17 +146,13 @@ public class AechronisMapData {
     /**
      * Called once per session (ports are static). Parses ports.json:
      *   { "meta": {...}, "ports": { "<name>": { "x":.., "z":.., "groups":[".."] }, ... } }
-     * Builds a flat list of port markers (name + position + group-derived color) and a
-     * list of connection lines between every pair of ports that share a group (full mesh
-     * per group — any port in a group can TP to any other). Group color is assigned from
-     * a fixed palette, deterministically by first-seen group order within this load.
+     * Builds a flat list of port markers (name + position + group-derived color). Group
+     * color is assigned from a fixed palette, deterministically by first-seen group
+     * order within this load.
      */
     public void loadPortData(JsonObject portsJson) {
         List<PortInfo> newPorts = new ArrayList<>();
-        List<PortConnection> newConnections = new ArrayList<>();
         Map<String, Integer> groupColor = new LinkedHashMap<>(); // group id -> color
-        // group id -> list of port indices in newPorts, for building connection lines
-        Map<String, List<Integer>> groupMembers = new HashMap<>();
 
         JsonObject portsObj = portsJson.has("ports") && !portsJson.get("ports").isJsonNull()
                 ? portsJson.getAsJsonObject("ports") : new JsonObject();
@@ -186,30 +179,12 @@ public class AechronisMapData {
                         k -> PORT_GROUP_PALETTE[groupColor.size() % PORT_GROUP_PALETTE.length]);
             }
 
-            int index = newPorts.size();
             newPorts.add(new PortInfo(name, x, z, color));
-            for (String g : groups) {
-                groupMembers.computeIfAbsent(g, k -> new ArrayList<>()).add(index);
-            }
-        }
-
-        // Connection lines: full mesh within each group (every pair connected).
-        for (Map.Entry<String, List<Integer>> e : groupMembers.entrySet()) {
-            List<Integer> members = e.getValue();
-            int color = groupColor.getOrDefault(e.getKey(), 0xFFFFFF);
-            for (int i = 0; i < members.size(); i++) {
-                for (int j = i + 1; j < members.size(); j++) {
-                    PortInfo a = newPorts.get(members.get(i));
-                    PortInfo b = newPorts.get(members.get(j));
-                    newConnections.add(new PortConnection(a.x, a.z, b.x, b.z, color));
-                }
-            }
         }
 
         this.ports = newPorts;
-        this.portConnections = newConnections;
-        System.out.println("[Aechronis] Loaded " + newPorts.size() + " ports, " +
-                newConnections.size() + " connection lines, " + groupColor.size() + " groups.");
+        System.out.println("[Crusalis] Loaded " + newPorts.size() + " ports, " +
+                groupColor.size() + " groups.");
     }
 
     // Fixed palette for port groups — distinct, readable hues. Cycled by group order.
@@ -333,7 +308,7 @@ public class AechronisMapData {
         this.coreChunkMap       = newCoreChunkMap;
         this.territoryDiagonals = newTerritoryDiagonals;
 
-        System.out.println("[Aechronis] Geometry built (once): " + newTerritoryChunkMap.size() +
+        System.out.println("[Crusalis] Geometry built (once): " + newTerritoryChunkMap.size() +
                 " territories, " + newBorderLines.size() + " node border lines, " +
                 newLabelInfos.size() + " node labels.");
     }
@@ -518,7 +493,10 @@ public class AechronisMapData {
         // Filler nations are skipped. Uses the nation key name as the label text
         // (longName in the data can be the literal string "null", so it's unreliable).
         List<NationLabelInfo> newNationLabels = new ArrayList<>();
-        final int NATION_LABEL_OFFSET_Z = -32; // 2 chunks north
+        // Nation labels render at 0.9 scale (see AechronisRenderer.NATION_LABEL_SCALE)
+        // vs. the town label's 0.5 at the same X — needs more clearance than a flat
+        // 2-chunk gap to avoid the two overlapping.
+        final int NATION_LABEL_OFFSET_Z = -80; // 5 chunks north
         for (Map.Entry<String, JsonElement> e : nationsObj.entrySet()) {
             String nationName = e.getKey();
             if (isFillerNation(nationName)) continue;
@@ -537,7 +515,7 @@ public class AechronisMapData {
             // Defensive only — should never happen in practice, since the fetcher's
             // single-thread scheduler guarantees loadWorldData() already ran before any
             // loadTownsData() call. Kept in case the fetch order ever changes.
-            System.out.println("[Aechronis] Geometry not built yet, skipping ownership diff this poll.");
+            System.out.println("[Crusalis] Geometry not built yet, skipping ownership diff this poll.");
             return;
         }
 
@@ -680,7 +658,7 @@ public class AechronisMapData {
                 skippedGrace + " held by chat-flip grace, " +
                 skippedOccupied + " held as occupied (two-phase), " +
                 newCapturedFromJson.size() + " captured/occupied territories.";
-        System.out.println("[Aechronis] " + pollSummary);
+        System.out.println("[Crusalis] " + pollSummary);
         AechronisWarCapture.logState(pollSummary); // no-op unless AechronisWarCapture.ENABLED
     }
 
@@ -759,13 +737,12 @@ public class AechronisMapData {
     public void captureTerritory(String tid, String capturingPlayerName) {
         Set<Long> chunks = territoryChunkMap.get(tid);
         if (chunks == null) {
-            System.out.println("[Aechronis] captureTerritory: no chunks found for tid=" + tid);
+            System.out.println("[Crusalis] captureTerritory: no chunks found for tid=" + tid);
             return;
         }
-        String nation = playerNationMap.get(capturingPlayerName);
-        int color = nation != null
-                ? nationColors.getOrDefault(nation, rgb(200, 200, 200))
-                : rgb(200, 200, 200);
+        ResolvedNation resolved = resolvePlayerNation(capturingPlayerName, rgb(200, 200, 200));
+        String nation = resolved.nation();
+        int color = resolved.color();
 
         // Stamp the chat-flip time so the ownership diff in loadTownsData() will NOT
         // remove this optimistic occupied-state marker for CHAT_FLIP_GRACE_MS — towns.json
@@ -778,7 +755,38 @@ public class AechronisMapData {
 
         String summary = "captureTerritory: marked tid=" + tid + " occupied by " +
                 (nation != null ? nation : capturingPlayerName) + " (base color unchanged; diagonal color set)";
-        System.out.println("[Aechronis] " + summary);
+        System.out.println("[Crusalis] " + summary);
+        AechronisWarCapture.logState(summary); // no-op unless AechronisWarCapture.ENABLED
+    }
+
+    /**
+     * Chat-triggered by `[War] X liberated territory (id=Y)`. Per the plugin source
+     * (FlagWar.kt), this message fires specifically when the ORIGINAL owner (or an
+     * ally/nation-mate) reclaims their own territory from an occupier — the plugin
+     * clears the occupier entirely at that point (Nodes.releaseTerritory()), it's the
+     * end of the war for this node, not a new capture.
+     *
+     * Previously this reused captureTerritory(), which marks the territory OCCUPIED —
+     * so every successful defense instantly painted a same-color diagonal (liberating
+     * player's own nation, since they're reclaiming their own land) that lingered for
+     * the full chat-flip grace window until the next poll cleaned it up. Liberation
+     * should immediately clear the occupied state and flip the base color to the
+     * liberating player's nation, mirroring what annexTerritory() already does for the
+     * JSON-poll-detected transition — so just resolve the color and delegate to it.
+     */
+    public void liberateTerritory(String tid, String liberatingPlayerName) {
+        ResolvedNation resolved = resolvePlayerNation(liberatingPlayerName, rgb(200, 200, 200));
+        String nation = resolved.nation();
+        int color = resolved.color();
+
+        annexTerritory(tid, color);
+        // Keep lastTerritoryColor in sync so the next poll's ownership diff sees
+        // "same as last" and doesn't redundantly reapply/log a color change.
+        lastTerritoryColor.put(tid, color);
+
+        String summary = "liberateTerritory: tid=" + tid + " restored to " +
+                (nation != null ? nation : liberatingPlayerName) + " (occupied marker cleared)";
+        System.out.println("[Crusalis] " + summary);
         AechronisWarCapture.logState(summary); // no-op unless AechronisWarCapture.ENABLED
     }
 
@@ -796,6 +804,14 @@ public class AechronisMapData {
      * transition with no resolvable nation), pass null and this method will only
      * clear the occupied state without recoloring — the next ownership diff pass will
      * do the recolor when it detects the color change.
+     *
+     * Sets mapData.dirty when it actually recolors chunks — this method is the only
+     * writer to nationChunksRaw reachable from a chat event (via liberateTerritory()),
+     * and unlike the loadTownsData() ownership-diff loop (which sets dirty itself),
+     * nothing else invalidates the renderer's alpha-cache for a chat-triggered
+     * liberation. Without this, liberateTerritory() also updates lastTerritoryColor to
+     * match, so the *next* towns.json poll sees "no change" for this territory too —
+     * the recolor could otherwise never actually reach the screen.
      */
     public void annexTerritory(String tid, Integer newOwnerColor) {
         AechronisWarCapture.logState("annexTerritory: tid=" + tid + " newOwnerColor=" +
@@ -816,7 +832,20 @@ public class AechronisMapData {
                 }
             }
         }
+        this.dirty = true;
     }
+
+    /** Resolves a player's nation and that nation's configured color via
+     *  playerNationMap, falling back to `fallback` for the color when the player can't
+     *  be resolved to a nation or the nation has no configured color. Centralizes the
+     *  lookup-with-fallback pattern shared by captureTerritory() and liberateTerritory(). */
+    private ResolvedNation resolvePlayerNation(String playerName, int fallback) {
+        String nation = playerNationMap.get(playerName);
+        int color = nation != null ? nationColors.getOrDefault(nation, fallback) : fallback;
+        return new ResolvedNation(nation, color);
+    }
+
+    private record ResolvedNation(String nation, int color) {}
 
     /**
      * Builds a fresh alpha-applied snapshot of the nation-fill chunk colors, safely
@@ -974,14 +1003,6 @@ public class AechronisMapData {
     }
 
     /** A connection line between two same-group ports — endpoints + RGB color. */
-    public static class PortConnection {
-        public final int x1, z1, x2, z2;
-        public final int color; // RGB, no alpha
-        public PortConnection(int x1, int z1, int x2, int z2, int color) {
-            this.x1 = x1; this.z1 = z1; this.x2 = x2; this.z2 = z2; this.color = color;
-        }
-    }
-
     public static int rgb(int r, int g, int b) {
         return (r << 16) | (g << 8) | b;
     }

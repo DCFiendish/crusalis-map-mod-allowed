@@ -3,7 +3,7 @@
 	"id": "aechronismapmod",
 	"version": "${version}",
 	"name": "Xaeros Minimap Fairplay Nation Overlay",
-	"description": "Live nation territory overlay for Aechronis server.",
+	"description": "Live nation territory overlay for the Crusalis server.",
 	"authors": [
 		"DCFiendish"
 	],
@@ -11,10 +11,10 @@
 	"environment": "client",
 	"entrypoints": {
 		"client": [
-			"com.example.AechronisMapMod"
+			"com.dcfiendish.aechronismapmod.AechronisMapMod"
 		],
 		"modmenu": [
-			"com.example.AechronisModMenu"
+			"com.dcfiendish.aechronismapmod.AechronisModMenu"
 		]
 	},
 	"mixins": [
@@ -27,7 +27,9 @@
 		"java": ">=21",
 		"fabric-api": "*",
 		"xaeroplus": "*",
-		"cloth-config": "*",
+		"cloth-config": "*"
+	},
+	"recommends": {
 		"modmenu": "*"
 	}
 }

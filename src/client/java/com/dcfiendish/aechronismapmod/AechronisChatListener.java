@@ -1,4 +1,4 @@
-package com.example;
+package com.dcfiendish.aechronismapmod;
 
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.network.chat.Component;
@@ -54,11 +54,14 @@ public class AechronisChatListener {
             return;
         }
 
-        // Territory liberated — same whole-node flip (reuses captureTerritory).
+        // Territory liberated — clears the occupied marker and flips the base color
+        // back to the liberating (original-owner) nation. See liberateTerritory()'s
+        // javadoc: this used to reuse captureTerritory(), which incorrectly marked the
+        // territory OCCUPIED on a successful defense.
         m = TERRITORY_LIBERATED.matcher(text);
         if (m.find()) {
             String liberatingPlayer = extractPlayerName(m.group(1).trim());
-            mapData.captureTerritory(m.group(2), liberatingPlayer);
+            mapData.liberateTerritory(m.group(2), liberatingPlayer);
         }
     }
 

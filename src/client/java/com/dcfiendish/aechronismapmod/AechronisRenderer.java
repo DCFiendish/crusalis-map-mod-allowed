@@ -1,4 +1,4 @@
-package com.example;
+package com.dcfiendish.aechronismapmod;
 
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -20,6 +20,9 @@ import java.util.Map;
 
 public class AechronisRenderer extends Module {
     private static final int  DEFAULT_NODE_COLOR    = 0x000000;
+    // Every overlay element except the nation fill renders fully opaque, always —
+    // opacity is only user-adjustable for the nation fill (see AechronisConfig).
+    private static final int  FULL_ALPHA            = 255;
 
     // Held directly by us, NOT registered with Globals.drawManager.registry() — that
     // registry is gated behind XaeroPlus's fairplay check (HudMod.INSTANCE.isFairPlay()).
@@ -43,13 +46,16 @@ public class AechronisRenderer extends Module {
     private int lastNationLabelCount = -1;
     private Long2ObjectOpenHashMap<Text> cachedPortTexts = new Long2ObjectOpenHashMap<>();
     private int lastPortCount = -1;
-    private Object2IntOpenHashMap<Line> cachedPortConnections = new Object2IntOpenHashMap<>();
-    private int lastPortConnectionCount = -1;
 
     // Track last config state to detect changes
     private int lastNationAlpha      = -1;
-    private int lastBorderAlpha      = -1;
     private boolean lastWhiteBorders = false;
+    // -1 sentinel guarantees the node-border cache actually builds on the very first
+    // call, regardless of mapData.dirty/whiteBorders state — without it, if dirty is
+    // still false and whiteBorders is still its false default on first render (the
+    // common case), neither condition would ever fire and cachedNodeBorders would stay
+    // permanently empty. Real sizes are always >= 0, so -1 can never coincidentally match.
+    private int lastNodeBorderCount  = -1;
 
     public AechronisRenderer(AechronisMapData mapData) {
         this.mapData = mapData;
@@ -116,15 +122,6 @@ public class AechronisRenderer extends Module {
                         2000
                 )
         );
-        ourFeatures.add(
-                DrawFeatureFactory.multiColorLines(
-                        "AechronisPortConnections",
-                        this::getPortConnections,
-                        (line, value) -> value,
-                        () -> 0.15f,
-                        2000
-                )
-        );
     }
 
     @Override
@@ -168,20 +165,19 @@ public class AechronisRenderer extends Module {
         if (!cfg.showNodeBorders) return new Object2IntOpenHashMap<>();
         if (dimension != ChunkUtils.getActualDimension()) return new Object2IntOpenHashMap<>();
 
-        int alpha = cfg.getNodeBorderAlpha();
         boolean white = cfg.whiteBorders;
-        if (mapData.dirty || alpha != lastBorderAlpha || white != lastWhiteBorders) {
-            rebuildNodeBordersCache(alpha, white);
-            lastBorderAlpha  = alpha;
+        if (mapData.dirty || white != lastWhiteBorders || mapData.nodeBorderLines.size() != lastNodeBorderCount) {
+            rebuildNodeBordersCache(white);
             lastWhiteBorders = white;
+            lastNodeBorderCount = mapData.nodeBorderLines.size();
         }
         return cachedNodeBorders;
     }
 
-    private void rebuildNodeBordersCache(int alpha, boolean white) {
+    private void rebuildNodeBordersCache(boolean white) {
         Object2IntOpenHashMap<Line> newCache = new Object2IntOpenHashMap<>(mapData.nodeBorderLines.size());
         int rgb = white ? 0xFFFFFF : DEFAULT_NODE_COLOR;
-        int color = withAlpha(rgb, alpha);
+        int color = withAlpha(rgb, FULL_ALPHA);
         for (AechronisMapData.NodeBorderLine l : mapData.nodeBorderLines) {
             newCache.put(new Line(l.x1, l.z1, l.x2, l.z2), color);
         }
@@ -197,13 +193,12 @@ public class AechronisRenderer extends Module {
         if (!cfg.showEverything) return result;
         if (dimension != ChunkUtils.getActualDimension()) return result;
 
-        int alpha = cfg.getOccupiedDiagonalAlpha();
         for (String tid : mapData.capturedTerritoryIds) {
             List<AechronisMapData.NodeBorderLine> segments = mapData.territoryDiagonals.get(tid);
             if (segments == null) continue;
             Integer color = mapData.territoryDiagonalColors.get(tid);
             if (color == null) continue;
-            int rgba = withAlpha(color, alpha);
+            int rgba = withAlpha(color, FULL_ALPHA);
             for (AechronisMapData.NodeBorderLine diag : segments) {
                 result.put(new Line(diag.x1, diag.z1, diag.x2, diag.z2), rgba);
             }
@@ -305,32 +300,9 @@ public class AechronisRenderer extends Module {
         for (AechronisMapData.PortInfo p : mapData.ports) {
             int textColor = (0xFF << 24) | (p.color & 0x00FFFFFF);
             long key = ChunkPos.asLong(p.x >> 4, p.z >> 4);
-            newCache.put(key, new Text(p.name, p.x, p.z, textColor, 0.6f));
+            newCache.put(key, new Text(p.name, p.x, p.z, textColor, 0.4f));
         }
         cachedPortTexts = newCache;
-    }
-
-    // ---- Port connection lines — between same-group ports, group color ----
-    private Object2IntMap<Line> getPortConnections(int wx, int wz, int wSize, ResourceKey<Level> dimension) {
-        AechronisConfig cfg = AechronisConfig.get();
-        if (!cfg.showEverything) return new Object2IntOpenHashMap<>();
-        if (!cfg.showPortConnections) return new Object2IntOpenHashMap<>();
-        if (dimension != ChunkUtils.getActualDimension()) return new Object2IntOpenHashMap<>();
-
-        if (mapData.portConnections.size() != lastPortConnectionCount) {
-            rebuildPortConnectionsCache();
-            lastPortConnectionCount = mapData.portConnections.size();
-        }
-        return cachedPortConnections;
-    }
-
-    private void rebuildPortConnectionsCache() {
-        Object2IntOpenHashMap<Line> newCache = new Object2IntOpenHashMap<>(mapData.portConnections.size());
-        for (AechronisMapData.PortConnection c : mapData.portConnections) {
-            int color = (0xFF << 24) | (c.color & 0x00FFFFFF);
-            newCache.put(new Line(c.x1, c.z1, c.x2, c.z2), color);
-        }
-        cachedPortConnections = newCache;
     }
 
     // ---- Helpers ----

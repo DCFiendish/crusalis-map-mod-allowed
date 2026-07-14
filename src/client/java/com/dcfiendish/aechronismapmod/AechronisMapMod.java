@@ -1,4 +1,4 @@
-package com.example;
+package com.dcfiendish.aechronismapmod;
 
 import me.shedaniel.autoconfig.AutoConfig;
 import me.shedaniel.autoconfig.serializer.GsonConfigSerializer;
@@ -14,7 +14,7 @@ public class AechronisMapMod implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		System.out.println("[Aechronis] Initializing...");
+		System.out.println("[Crusalis] Initializing...");
 
 		// Register config
 		AutoConfig.register(AechronisConfig.class, GsonConfigSerializer::new);
@@ -43,43 +43,12 @@ public class AechronisMapMod implements ClientModInitializer {
 			var serverData = client.getCurrentServer();
 			String serverAddress = serverData != null ? serverData.ip : null;
 			if (serverAddress == null || !serverAddress.toLowerCase().contains("crusalis.net")) {
-				System.out.println("[Aechronis] Not connected to Crusalis (address=" + serverAddress + "), mod inactive.");
+				System.out.println("[Crusalis] Not connected to Crusalis (address=" + serverAddress + "), mod inactive.");
 				if (rendererRegistered) {
 					renderer.disable();
-					System.out.println("[Aechronis] Renderer disabled (left Crusalis).");
+					System.out.println("[Crusalis] Renderer disabled (left Crusalis).");
 				}
-				return;
-			}
-
-			String uuid = client.player != null
-					? client.player.getGameProfile().id().toString().toLowerCase()
-					: null;
-
-			if (uuid == null) {
-				System.out.println("[Aechronis] Could not get player UUID, mod inactive.");
-				if (rendererRegistered) {
-					renderer.disable();
-					System.out.println("[Aechronis] Renderer disabled (no player UUID).");
-				}
-				return;
-			}
-
-			// Retry loop — whitelist fetch may still be in progress (cheap no-op if already loaded)
-			boolean allowed = false;
-			for (int i = 0; i < 10; i++) {
-				if (!mapData.whitelistedUuids.isEmpty()) {
-					allowed = mapData.whitelistedUuids.contains(uuid);
-					break;
-				}
-				try { Thread.sleep(500); } catch (InterruptedException ignored) {}
-			}
-
-			if (!allowed) {
-				System.out.println("[Aechronis] Not whitelisted, mod inactive.");
-				if (rendererRegistered) {
-					renderer.disable();
-					System.out.println("[Aechronis] Renderer disabled (not whitelisted).");
-				}
+				fetcher.onLeaveCrusalis();
 				return;
 			}
 
@@ -89,19 +58,38 @@ public class AechronisMapMod implements ClientModInitializer {
 				xaeroplus.module.ModuleManager.addModule(renderer);
 				renderer.enable();
 				rendererRegistered = true;
-				System.out.println("[Aechronis] Renderer created and enabled.");
+				System.out.println("[Crusalis] Renderer created and enabled.");
 			} else {
 				// Subsequent joins (proxy transfers etc.) — force a fresh re-registration
 				// of draw features by disabling then re-enabling the same module instance.
 				renderer.disable();
 				renderer.enable();
-				System.out.println("[Aechronis] Renderer re-enabled (fresh registration).");
+				System.out.println("[Crusalis] Renderer re-enabled (fresh registration).");
 			}
+			fetcher.onJoinCrusalis();
 		});
 
-		// Start fetcher
-		fetcher.start();
+		// Disconnecting (quit to title, kicked, connection lost) does NOT fire another
+		// JOIN event. We deliberately do NOT call renderer.disable() here, even though
+		// that means AechronisRenderer.ourFeatures (and therefore the Crusalis-only
+		// fairplay bypass in AechronisDrawManagerMixin) can stay "live" for a few extra
+		// frames until the next JOIN corrects it — this used to call renderer.disable()
+		// immediately on disconnect, but that closes each DrawFeature (releasing
+		// XaeroPlus's own GL-backed resources) at a moment that isn't guaranteed to be
+		// safe relative to the old world/GL context's own teardown, which produced a
+		// reproducible native crash (Windows exit 0xC0000409 / STATUS_STACK_BUFFER_OVERRUN,
+		// no Java exception) specifically when disconnecting from Crusalis. The JOIN
+		// handler's existing "not connected to Crusalis" branch already calls
+		// renderer.disable() safely — by that point a full new connection has been
+		// established, well past the old GL context's teardown window. A brief stale
+		// overlay/bypass is a far smaller cost than a client crash.
+		//
+		// Safe to call here regardless: onLeaveCrusalis() is pure Java scheduler state
+		// (cancels a ScheduledFuture), no GL/native interaction at all.
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+			fetcher.onLeaveCrusalis();
+		});
 
-		System.out.println("[Aechronis] Initialized!");
+		System.out.println("[Crusalis] Initialized!");
 	}
 }

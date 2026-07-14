@@ -1,6 +1,6 @@
-package com.example.client.mixin;
+package com.dcfiendish.aechronismapmod.client.mixin;
 
-import com.example.AechronisRenderer;
+import com.dcfiendish.aechronismapmod.AechronisRenderer;
 import com.mojang.blaze3d.vertex.PoseStack;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -20,12 +20,24 @@ import xaeroplus.feature.render.DrawManager;
  * methods drawMinimapFeatures / drawWorldMapFeatures).
  *
  * SCOPE OF THE FAIRPLAY WORKAROUND IN THIS FILE:
- *   1. HEAD inject: renders OUR overlay (AechronisRenderer.ourFeatures) unconditionally.
+ *   1. HEAD inject: renders OUR overlay (AechronisRenderer.ourFeatures) unconditionally
+ *      (a no-op when the list is empty — see gating note below).
  *   2. @Redirect on isFairPlay() within drawMinimapFeatures / drawWorldMapFeatures:
  *      forces the check to return false so XaeroPlus's OWN draw features registered
  *      via Globals.drawManager.registry() (the user drawing tool, view-distance
  *      squares, etc.) also render on this server. This is a broader scope than the
- *      original overlay-only workaround, explicitly approved by the server admin.
+ *      original overlay-only workaround, explicitly approved by the server admin
+ *      FOR CRUSALIS SPECIFICALLY — see gating note below.
+ *
+ * SERVER GATING: the @Redirect only forces isFairPlay() false while
+ * AechronisRenderer.ourFeatures is non-empty, which is exactly the condition
+ * AechronisMapMod's JOIN handler maintains: non-empty only while connected to
+ * Crusalis (server address contains "crusalis.net") and the renderer is enabled;
+ * cleared on disconnect, server switch, or any other early-return path in that
+ * handler. Elsewhere (any other server, or before the renderer has enabled), the
+ * redirect delegates to the REAL isFairPlay() value — the bypass never applies off
+ * Crusalis. This mod may later ship separate per-server builds/approvals; each
+ * such build should gate this the same way, scoped to whatever server it targets.
  *
  * WHAT THIS DOES NOT TOUCH (per admin condition: "cave mode and entity radar must
  * stay disabled, everything else is ok"):
@@ -34,17 +46,30 @@ import xaeroplus.feature.render.DrawManager;
  *   - Core Xaero's cave mode fairplay enforcement (separate mechanism, untouched).
  *   - The HudMod.isFairPlay() flag itself is NOT modified globally — the redirect
  *     only takes effect when isFairPlay() is called from within these two specific
- *     methods. Any other code that checks isFairPlay() still sees the real value.
+ *     methods, AND only while on Crusalis per the gating above. Any other code that
+ *     checks isFairPlay() still sees the real value.
  *
  * VERIFICATION TO RUN AFTER DEPLOY: confirm cave mode and entity radar are STILL
- * blocked on this server (try to enable them in XaeroPlus settings — they should
- * still be gated). If they're somehow not, revert this file immediately — the
- * admin's condition was specific to leaving those enforcements intact.
+ * blocked on Crusalis (try to enable them in XaeroPlus settings — they should still
+ * be gated), AND confirm fairplay is untouched on a non-Crusalis server (join one,
+ * confirm XaeroPlus's own draw features stay fairplay-gated there). If either check
+ * fails, revert this file immediately.
+ *
+ * VERSION COMPATIBILITY: every injector below is `require = 0` (soft-fail) rather
+ * than the mixins.json default of 1 (hard-fail). This mixin targets DrawManager's
+ * internal method names/signatures and a specific isFairPlay() call site — none of
+ * that is part of XaeroPlus's stable public addon API (unlike AechronisRenderer's
+ * xaeroplus.feature.render.* usage, which is), so a future/older XaeroPlus release
+ * could change it without warning. With require=0, a mismatch just fails this one
+ * mixin quietly (Mixin logs a WARN) and the overlay/fairplay-bypass silently no-ops
+ * instead of crashing the client outright — degrading gracefully across whatever
+ * XaeroPlus version the user actually has installed, rather than an all-or-nothing
+ * dependency pin.
  */
 @Mixin(DrawManager.class)
 public class AechronisDrawManagerMixin {
 
-    @Inject(method = "drawMinimapFeatures", at = @At("HEAD"))
+    @Inject(method = "drawMinimapFeatures", at = @At("HEAD"), require = 0)
     private void aechronis$alwaysDrawMinimap(int chunkX, int chunkZ, int tileX, int tileZ,
                                              int insideX, int insideZ,
                                              PoseStack matrixStack, XaeroBufferProvider renderTypeBuffers,
@@ -63,7 +88,7 @@ public class AechronisDrawManagerMixin {
         matrixStack.popPose();
     }
 
-    @Inject(method = "drawWorldMapFeatures", at = @At("HEAD"))
+    @Inject(method = "drawWorldMapFeatures", at = @At("HEAD"), require = 0)
     private void aechronis$alwaysDrawWorldMap(int flooredCameraX, int flooredCameraZ,
                                               PoseStack matrixStack, double fboScale,
                                               XaeroBufferProvider renderTypeBuffers,
@@ -80,7 +105,12 @@ public class AechronisDrawManagerMixin {
 
     /**
      * Force HudMod.isFairPlay() to return false when called from within DrawManager's
-     * draw methods, so XaeroPlus's OWN registered draw features render alongside ours.
+     * draw methods, so XaeroPlus's OWN registered draw features render alongside ours —
+     * but ONLY while connected to Crusalis (see the class-level "SERVER GATING" note).
+     * AechronisRenderer.ourFeatures is non-empty exactly while AechronisMapMod's JOIN
+     * handler has the renderer enabled, which only happens on Crusalis; everywhere else
+     * this delegates to the real isFairPlay() value, so the bypass never leaks to other
+     * servers this mod might be installed on.
      *
      * This redirect ONLY intercepts calls to isFairPlay() that originate inside the two
      * target methods — it does not change the global fairplay state, and any other code
@@ -93,9 +123,11 @@ public class AechronisDrawManagerMixin {
      */
     @Redirect(
             method = {"drawMinimapFeatures", "drawWorldMapFeatures"},
-            at = @At(value = "INVOKE", target = "Lxaero/common/HudMod;isFairPlay()Z")
+            at = @At(value = "INVOKE", target = "Lxaero/common/HudMod;isFairPlay()Z"),
+            require = 0
     )
     private boolean aechronis$forceFairPlayFalse(HudMod instance) {
+        if (AechronisRenderer.ourFeatures.isEmpty()) return instance.isFairPlay();
         return false;
     }
 }

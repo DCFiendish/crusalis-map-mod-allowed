@@ -38,3 +38,9 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# third-party binaries — not ours to redistribute (see libs/README.md for how to get them)
+libs/*.jar
+
+# local scratch/debug tooling — not part of the shipped mod
+tools/
