@@ -1,5 +1,7 @@
 # Crusalis Map Mod
 
+REQUIRES EXACT XAEROS VERSIONS. DO NOT BOTHER ME IF YOU DO NOT HAVE THE CORRECT VERSIONS.
+
 A Fabric client mod that adds a live nation/territory overlay to Xaero's
 Minimap and World Map, built for the [Nodes](https://nodes.soy/) town/nation
 plugin. It polls the server's public map-data endpoints and Minecraft chat to
