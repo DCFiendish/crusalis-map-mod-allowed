@@ -341,6 +341,22 @@ public class AechronisMapData {
             }
         }
 
+        // Towns not in any real nation (towns.json can ship an empty "nations" object) still
+        // carry their own "color". Treat each as a solo nation of one so its territory gets
+        // a fill instead of being skipped by the ownership diff below.
+        Map<String, Integer> soloTownColors = new HashMap<>();
+        JsonObject townsForSolo = towns.has("towns") ? towns.getAsJsonObject("towns") : new JsonObject();
+        for (Map.Entry<String, JsonElement> e : townsForSolo.entrySet()) {
+            String townName = e.getKey();
+            if (townNation.containsKey(townName)) continue;
+            JsonObject town = e.getValue().getAsJsonObject();
+            if (!town.has("color") || town.get("color").isJsonNull()) continue;
+            JsonArray c = town.getAsJsonArray("color");
+            if (c.size() < 3) continue;
+            townNation.put(townName, townName);
+            soloTownColors.put(townName, rgb(c.get(0).getAsInt(), c.get(1).getAsInt(), c.get(2).getAsInt()));
+        }
+
         this.townNationMap = new HashMap<>(townNation);
 
         Map<String, String> territoryNation = new HashMap<>();
@@ -461,6 +477,9 @@ public class AechronisMapData {
             }
         }
         newNationColors.putAll(gistColors);
+        for (Map.Entry<String, Integer> e : soloTownColors.entrySet()) {
+            newNationColors.putIfAbsent(e.getKey(), e.getValue());
+        }
         this.nationColors = newNationColors;
 
         // Town-derived waypoints/labels — cheap (proportional to town count), recomputed
