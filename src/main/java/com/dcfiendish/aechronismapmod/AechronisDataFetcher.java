@@ -80,6 +80,11 @@ public class AechronisDataFetcher {
         }
     }
 
+    // world.json drives borders and nation fills and is fetched once; without a retry a
+    // single transient failure leaves them empty for the whole session while labels (fed
+    // by the separate towns poll) still work.
+    private static final long WORLD_FETCH_RETRY_DELAY_SECONDS = 10;
+
     private void fetchWorldAndTerritories() {
         try {
             System.out.println("[Crusalis] Fetching world.json and towns.json for territory data...");
@@ -90,8 +95,12 @@ public class AechronisDataFetcher {
             mapData.loadWorldData(worldJson);
             mapData.loadTownsData(townsJson, townsStr);
             System.out.println("[Crusalis] World and territory data loaded.");
-        } catch (Exception e) {
-            System.out.println("[Crusalis] World fetch error: " + e.getMessage());
+        } catch (Throwable e) {
+            // Throwable, not Exception: world.json is ~16MB, so an OutOfMemoryError while
+            // parsing is real and must still trigger the retry.
+            System.out.println("[Crusalis] World fetch error: " + e.getMessage() +
+                    " - retrying in " + WORLD_FETCH_RETRY_DELAY_SECONDS + "s.");
+            scheduler.schedule(this::fetchWorldAndTerritories, WORLD_FETCH_RETRY_DELAY_SECONDS, TimeUnit.SECONDS);
         }
     }
 
@@ -112,7 +121,7 @@ public class AechronisDataFetcher {
             String json = fetch(TOWNS_URL);
             JsonObject townsJson = JsonParser.parseString(json).getAsJsonObject();
             mapData.loadTownsData(townsJson, json);
-        } catch (Exception e) {
+        } catch (Throwable e) { // an escaped Throwable would cancel the recurring poll
             System.out.println("[Crusalis] Towns fetch error: " + e.getMessage());
         }
     }
