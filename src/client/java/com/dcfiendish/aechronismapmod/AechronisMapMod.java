@@ -42,7 +42,7 @@ public class AechronisMapMod implements ClientModInitializer {
 			// (This was the actual cause of the nation overlay showing up in singleplayer.)
 			var serverData = client.getCurrentServer();
 			String serverAddress = serverData != null ? serverData.ip : null;
-			if (serverAddress == null || !serverAddress.toLowerCase().contains("crusalis.net")) {
+			if (serverAddress == null || !serverAddress.toLowerCase().contains("167.235.177.45")) {
 				System.out.println("[Crusalis] Not connected to Crusalis (address=" + serverAddress + "), mod inactive.");
 				if (rendererRegistered) {
 					renderer.disable();
