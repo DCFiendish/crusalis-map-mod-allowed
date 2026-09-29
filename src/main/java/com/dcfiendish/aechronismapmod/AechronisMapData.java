@@ -264,12 +264,16 @@ public class AechronisMapData {
                 if (!n.isJsonNull()) nodeTypeNames.add(n.getAsString());
             }
 
-            if (!chunkPairs.isEmpty() && !nodeTypeNames.isEmpty()) {
+            // Borders for EVERY territory with chunks — live world.json has thousands with
+            // an empty "nodes" list, and those were left unbordered before.
+            if (!chunkPairs.isEmpty()) {
                 List<int[]> borders = getBorderLines(chunkPairs);
                 for (int[] line : borders) {
                     newBorderLines.add(new NodeBorderLine(line[0], line[1], line[2], line[3]));
                 }
+            }
 
+            if (!chunkPairs.isEmpty() && !nodeTypeNames.isEmpty()) {
                 // Label-only filtering: drop "basic", keep real resources in order.
                 List<String> labelTypes = new ArrayList<>();
                 for (String t : nodeTypeNames) {
