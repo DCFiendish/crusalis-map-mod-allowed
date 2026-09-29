@@ -86,7 +86,7 @@ public class AechronisMapData {
     // of every 60 seconds regardless. This is intentionally time-agnostic: it
     // doesn't matter whether changes happen on schedule, late, or off-schedule —
     // it only reacts to towns.json actually differing from last poll.
-    public volatile boolean dirty = false;
+    public volatile long dataVersion = 0;
 
     private JsonObject worldData = null;
 
@@ -671,7 +671,7 @@ public class AechronisMapData {
         }
 
         if (changedCount > 0) {
-            this.dirty = true;
+            this.dataVersion++;
         }
 
         String pollSummary = "Towns poll: " + changedCount + " territories changed ownership/color, " +
@@ -825,9 +825,9 @@ public class AechronisMapData {
      * clear the occupied state without recoloring — the next ownership diff pass will
      * do the recolor when it detects the color change.
      *
-     * Sets mapData.dirty when it actually recolors chunks — this method is the only
+     * Bumps mapData.dataVersion when it actually recolors chunks — this method is the only
      * writer to nationChunksRaw reachable from a chat event (via liberateTerritory()),
-     * and unlike the loadTownsData() ownership-diff loop (which sets dirty itself),
+     * and unlike the loadTownsData() ownership-diff loop (which bumps dataVersion itself),
      * nothing else invalidates the renderer's alpha-cache for a chat-triggered
      * liberation. Without this, liberateTerritory() also updates lastTerritoryColor to
      * match, so the *next* towns.json poll sees "no change" for this territory too —
@@ -852,7 +852,7 @@ public class AechronisMapData {
                 }
             }
         }
-        this.dirty = true;
+        this.dataVersion++;
     }
 
     /** Resolves a player's nation and that nation's configured color via
@@ -872,16 +872,18 @@ public class AechronisMapData {
      * w.r.t. concurrent writers (the towns.json poll diff, and chat-driven capture
      * events). Uses fastutil's primitive entry-set iteration — no boxing of the
      * underlying long keys/values, unlike a plain Map.Entry<Long,Long> loop. Called
-     * by the renderer only when mapData.dirty is true or the alpha config changed,
-     * not every frame.
+     * by XaeroPlus's async highlight cache off the render thread, once per window refresh.
      */
-    public Long2LongOpenHashMap buildAlphaCache(int alpha) {
-        Long2LongOpenHashMap result;
+    public Long2LongOpenHashMap buildAlphaCacheInBounds(
+            int alpha, int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ) {
+        Long2LongOpenHashMap result = new Long2LongOpenHashMap();
         synchronized (nationChunksLock) {
-            result = new Long2LongOpenHashMap(nationChunksRaw.size());
             for (Long2LongMap.Entry e : nationChunksRaw.long2LongEntrySet()) {
-                int rgb = (int) e.getLongValue();
-                result.put(e.getLongKey(), (long) withAlpha(rgb, alpha));
+                long pos = e.getLongKey();
+                int cx = ChunkPos.getX(pos);
+                int cz = ChunkPos.getZ(pos);
+                if (cx < minChunkX || cx > maxChunkX || cz < minChunkZ || cz > maxChunkZ) continue;
+                result.put(pos, (long) withAlpha((int) e.getLongValue(), alpha));
             }
         }
         return result;

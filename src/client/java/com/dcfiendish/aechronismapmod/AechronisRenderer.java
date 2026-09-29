@@ -34,7 +34,6 @@ public class AechronisRenderer extends Module {
     private final AechronisMapData mapData;
 
     // Cached maps — only rebuilt when data or config changes
-    private Long2LongOpenHashMap cachedNationChunks = new Long2LongOpenHashMap();
     private Object2IntOpenHashMap<Line> cachedNodeBorders = new Object2IntOpenHashMap<>();
     private Long2ObjectOpenHashMap<Text> cachedNodeTexts = new Long2ObjectOpenHashMap<>();
     private int lastLabelCount = -1;
@@ -48,14 +47,24 @@ public class AechronisRenderer extends Module {
     private int lastPortCount = -1;
 
     // Track last config state to detect changes
-    private int lastNationAlpha      = -1;
     private boolean lastWhiteBorders = false;
     // -1 sentinel guarantees the node-border cache actually builds on the very first
-    // call, regardless of mapData.dirty/whiteBorders state — without it, if dirty is
-    // still false and whiteBorders is still its false default on first render (the
-    // common case), neither condition would ever fire and cachedNodeBorders would stay
-    // permanently empty. Real sizes are always >= 0, so -1 can never coincidentally match.
+    // call, regardless of mapData.dataVersion/whiteBorders state. Real sizes are always
+    // >= 0, so -1 can never coincidentally match.
     private int lastNodeBorderCount  = -1;
+    // Per-cache "last seen mapData.dataVersion" (-1 sentinel: builds on first call), so no
+    // cache depends on another one resetting a shared flag.
+    private long lastNodeBorderVersion = -1;
+    private long lastNodeLabelVersion  = -1;
+    private long lastTownLabelVersion  = -1;
+    private long lastNationLabelVersion = -1;
+
+    // Zoom decluttering: wSize is XaeroPlus's region-radius for the current view (grows as
+    // you zoom out). Each layer returns empty past its threshold; caches are untouched.
+    // Starting values only, not tuned in-game.
+    private static final int RESOURCE_LABEL_MAX_WSIZE = 6;
+    private static final int NODE_BORDER_MAX_WSIZE    = 10;
+    private static final int TOWN_LABEL_MAX_WSIZE     = 28;
 
     public AechronisRenderer(AechronisMapData mapData) {
         this.mapData = mapData;
@@ -65,11 +74,10 @@ public class AechronisRenderer extends Module {
     protected void onEnable() {
         ourFeatures.clear();
         ourFeatures.add(
-                DrawFeatureFactory.multiColorChunkHighlights(
+                DrawFeatureFactory.multiColorAsyncChunkHighlights(
                         "AechronisNations",
-                        this::getNationChunks,
-                        this::getChunkColor,
-                        2000
+                        this::getNationChunksInWindow,
+                        this::getChunkColor
                 )
         );
         ourFeatures.add(
@@ -134,24 +142,23 @@ public class AechronisRenderer extends Module {
         ourFeatures.clear();
     }
 
-    // ---- Nation chunks — cached, only rebuilt on data or config change ----
-    private Long2LongOpenHashMap getNationChunks(ResourceKey<Level> dimension) {
+    // ---- Nation chunks — windowed and async (computed off the render thread) ----
+    // The "Direct" highlight feature rebuilt its whole GPU buffer on the render thread
+    // every ~2s; with ~1.5M claimed chunks that lagged badly. This one only asks for the
+    // chunks in the current viewport. windowX/windowZ/windowSize are REGION coordinates
+    // (1 region = 32 chunks); pad one region per side to avoid pop-in while panning.
+    private Long2LongOpenHashMap getNationChunksInWindow(int windowX, int windowZ, int windowSize, ResourceKey<Level> dimension) {
         AechronisConfig cfg = AechronisConfig.get();
         if (!cfg.showEverything) return new Long2LongOpenHashMap();
         if (!cfg.showNationFills) return new Long2LongOpenHashMap();
         if (dimension != ChunkUtils.getActualDimension()) return new Long2LongOpenHashMap();
 
-        int alpha = cfg.getNationFillAlpha();
-        if (mapData.dirty || alpha != lastNationAlpha) {
-            rebuildNationChunksCache(alpha);
-            lastNationAlpha = alpha;
-            mapData.dirty = false;
-        }
-        return cachedNationChunks;
-    }
-
-    private void rebuildNationChunksCache(int alpha) {
-        cachedNationChunks = mapData.buildAlphaCache(alpha);
+        int pad = 1;
+        int minChunkX = (windowX - windowSize - pad) << 5;
+        int maxChunkX = ((windowX + windowSize + pad) << 5) + 31;
+        int minChunkZ = (windowZ - windowSize - pad) << 5;
+        int maxChunkZ = ((windowZ + windowSize + pad) << 5) + 31;
+        return mapData.buildAlphaCacheInBounds(cfg.getNationFillAlpha(), minChunkX, minChunkZ, maxChunkX, maxChunkZ);
     }
 
     private int getChunkColor(long chunkPos, long value) {
@@ -164,12 +171,14 @@ public class AechronisRenderer extends Module {
         if (!cfg.showEverything) return new Object2IntOpenHashMap<>();
         if (!cfg.showNodeBorders) return new Object2IntOpenHashMap<>();
         if (dimension != ChunkUtils.getActualDimension()) return new Object2IntOpenHashMap<>();
+        if (wSize > NODE_BORDER_MAX_WSIZE) return new Object2IntOpenHashMap<>();
 
         boolean white = cfg.whiteBorders;
-        if (mapData.dirty || white != lastWhiteBorders || mapData.nodeBorderLines.size() != lastNodeBorderCount) {
+        if (mapData.dataVersion != lastNodeBorderVersion || white != lastWhiteBorders || mapData.nodeBorderLines.size() != lastNodeBorderCount) {
             rebuildNodeBordersCache(white);
             lastWhiteBorders = white;
             lastNodeBorderCount = mapData.nodeBorderLines.size();
+            lastNodeBorderVersion = mapData.dataVersion;
         }
         return cachedNodeBorders;
     }
@@ -212,10 +221,12 @@ public class AechronisRenderer extends Module {
         if (!cfg.showEverything) return new Long2ObjectOpenHashMap<>();
         if (!cfg.showNodeLabels) return new Long2ObjectOpenHashMap<>();
         if (dimension != ChunkUtils.getActualDimension()) return new Long2ObjectOpenHashMap<>();
+        if (wSize > RESOURCE_LABEL_MAX_WSIZE) return new Long2ObjectOpenHashMap<>();
 
-        if (mapData.dirty || mapData.nodeLabelInfos.size() != lastLabelCount) {
+        if (mapData.dataVersion != lastNodeLabelVersion || mapData.nodeLabelInfos.size() != lastLabelCount) {
             rebuildNodeTextsCache();
             lastLabelCount = mapData.nodeLabelInfos.size();
+            lastNodeLabelVersion = mapData.dataVersion;
         }
         return cachedNodeTexts;
     }
@@ -238,10 +249,12 @@ public class AechronisRenderer extends Module {
         if (!cfg.showEverything) return new Long2ObjectOpenHashMap<>();
         if (!cfg.showTownLabels) return new Long2ObjectOpenHashMap<>();
         if (dimension != ChunkUtils.getActualDimension()) return new Long2ObjectOpenHashMap<>();
+        if (wSize > TOWN_LABEL_MAX_WSIZE) return new Long2ObjectOpenHashMap<>();
 
-        if (mapData.dirty || mapData.townLabelInfos.size() != lastTownLabelCount) {
+        if (mapData.dataVersion != lastTownLabelVersion || mapData.townLabelInfos.size() != lastTownLabelCount) {
             rebuildTownTextsCache();
             lastTownLabelCount = mapData.townLabelInfos.size();
+            lastTownLabelVersion = mapData.dataVersion;
         }
         return cachedTownTexts;
     }
@@ -264,9 +277,10 @@ public class AechronisRenderer extends Module {
         if (!cfg.showNationLabels) return new Long2ObjectOpenHashMap<>();
         if (dimension != ChunkUtils.getActualDimension()) return new Long2ObjectOpenHashMap<>();
 
-        if (mapData.dirty || mapData.nationLabelInfos.size() != lastNationLabelCount) {
+        if (mapData.dataVersion != lastNationLabelVersion || mapData.nationLabelInfos.size() != lastNationLabelCount) {
             rebuildNationTextsCache();
             lastNationLabelCount = mapData.nationLabelInfos.size();
+            lastNationLabelVersion = mapData.dataVersion;
         }
         return cachedNationTexts;
     }
