@@ -14,6 +14,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.InteractionResult;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 
 public class AechronisMapMod implements ClientModInitializer {
 	/** Dev client (gradlew runClient). Test-only switches are ignored everywhere else. */
@@ -46,6 +47,11 @@ public class AechronisMapMod implements ClientModInitializer {
 		KeyMapping cycleFilter = KeyBindingHelper.registerKeyBinding(new KeyMapping(
 				"key.aechronismapmod.cycle_filter", InputConstants.UNKNOWN.getValue(), keyCategory));
 
+		// Unbound by default: the mod's own chunk borders (Lunar replaces vanilla F3+G).
+		KeyMapping toggleBorders = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+				"key.aechronismapmod.toggle_chunk_borders", InputConstants.UNKNOWN.getValue(), keyCategory));
+		WorldRenderEvents.END_EXTRACTION.register(ctx -> AechronisChunkBorders.draw(Minecraft.getInstance()));
+
 		// Custom PNG icons: loaded once the texture manager exists, reloaded on every settings save.
 		ClientLifecycleEvents.CLIENT_STARTED.register(client -> AechronisIcons.reload());
 		AutoConfig.getConfigHolder(AechronisConfig.class).registerSaveListener((holder, config) -> {
@@ -62,6 +68,7 @@ public class AechronisMapMod implements ClientModInitializer {
 				client.setScreen(AutoConfig.getConfigScreen(AechronisConfig.class, client.screen).get());
 			}
 			while (cycleFilter.consumeClick()) cycleResourceFilter(client);
+			while (toggleBorders.consumeClick()) toggleChunkBorders(client);
 			AechronisIcons.tick(mapData);
 			AechronisRenderer.tick();
 		});
@@ -109,6 +116,16 @@ public class AechronisMapMod implements ClientModInitializer {
 		String host = ServerAddress.parseString(address.trim()).getHost().toLowerCase(java.util.Locale.ROOT);
 		if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
 		return host.equals("crusalis.net") || host.endsWith(".crusalis.net") || host.equals("167.235.177.45");
+	}
+
+	private static void toggleChunkBorders(Minecraft client) {
+		AechronisConfig cfg = AechronisConfig.get();
+		cfg.showOwnChunkBorders = !cfg.showOwnChunkBorders;
+		AutoConfig.getConfigHolder(AechronisConfig.class).save();
+		if (client.player != null) {
+			client.player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+					"Crusalis chunk borders: " + (cfg.showOwnChunkBorders ? "on" : "off")), true);
+		}
 	}
 
 	/** All -> each node type in the data (alphabetical) -> All. Shown on the action bar. */
