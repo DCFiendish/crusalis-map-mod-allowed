@@ -62,4 +62,4 @@ For IDE setup, see the [Fabric documentation](https://docs.fabricmc.net/develop/
 
 ## License
 
-CC0-1.0 — see `LICENSE`.
+All Rights Reserved — see `LICENSE`.
