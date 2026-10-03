@@ -46,8 +46,18 @@ public final class AechronisRenderer {
 
     record Rect(int x1, int z1, int x2, int z2, int argb) {}
     record Seg(int x1, int z1, int x2, int z2, int argb, float width) {}
-    /** text may be null (icons only); icons are drawn as a row centred on the anchor, text below. */
-    record Label(String text, int x, int z, int argb, float scale, List<AechronisIcons.Icon> icons) {}
+    /**
+     * text may be null (icons only); icons are drawn as a row centred on the anchor, text below.
+     * maxHalfView: the label hides on the world map once the view's half-extent (blocks)
+     * exceeds this, so zoomed-out maps don't drown in text.
+     */
+    record Label(String text, int x, int z, int argb, float scale, List<AechronisIcons.Icon> icons,
+                 double maxHalfView) {}
+
+    // Zoom decluttering (world map), as in the XaeroPlus-era Aechronis mod: resource node
+    // markers go past ~6 regions of view radius, town labels past ~28; nation names stay.
+    private static final double NODE_LABEL_MAX_HALF_VIEW = 6 * 512;
+    private static final double TOWN_LABEL_MAX_HALF_VIEW = 28 * 512;
 
     /** Everything one frame draws, in draw order. Swapped atomically, never mutated. */
     /**
@@ -202,18 +212,21 @@ public final class AechronisRenderer {
                 if (!sc.filter.isEmpty() && !i.resources.contains(sc.filter)) continue;
                 // Per-resource color (diamonds/gold/iron get their own; others white),
                 // carried on the label itself. Full alpha so text stays legible.
+                // With a resource filter set, keep its nodes visible at every zoom: that's the
+                // point of filtering (find every node of one type at a glance).
                 addLabel(out, sc.nodeLabels ? i.label : null, i.x, i.z, withAlpha(i.color, FULL_ALPHA),
-                        NODE_LABEL_SCALE, icons(sc.icons, i.resources));
+                        NODE_LABEL_SCALE, icons(sc.icons, i.resources),
+                        sc.filter.isEmpty() ? NODE_LABEL_MAX_HALF_VIEW : Double.MAX_VALUE);
             }
             for (AechronisMapData.NodeLabelInfo i : mapData.townLabelInfos.values()) {
                 addLabel(out, sc.townLabels ? i.label : null, i.x, i.z, withAlpha(0xFFFFFF, FULL_ALPHA),
-                        NODE_LABEL_SCALE, icon(sc.icons, "town"));
+                        NODE_LABEL_SCALE, icon(sc.icons, "town"), TOWN_LABEL_MAX_HALF_VIEW);
             }
             LongOpenHashSet seen = new LongOpenHashSet(); // one nation label per chunk, as before
             for (AechronisMapData.NationLabelInfo i : mapData.nationLabelInfos) {
                 if (seen.add(ChunkPos.asLong(i.x >> 4, i.z >> 4))) {
                     addLabel(out, sc.nationLabels ? i.label : null, i.x, i.z, withAlpha(i.color, FULL_ALPHA),
-                            NATION_LABEL_SCALE, icon(sc.icons, "nation"));
+                            NATION_LABEL_SCALE, icon(sc.icons, "nation"), Double.MAX_VALUE);
                 }
             }
         }
@@ -221,8 +234,8 @@ public final class AechronisRenderer {
     }
 
     private static void addLabel(List<Label> out, String text, int x, int z, int argb, float scale,
-                                 List<AechronisIcons.Icon> icons) {
-        if (text != null || !icons.isEmpty()) out.add(new Label(text, x, z, argb, scale, icons));
+                                 List<AechronisIcons.Icon> icons, double maxHalfView) {
+        if (text != null || !icons.isEmpty()) out.add(new Label(text, x, z, argb, scale, icons, maxHalfView));
     }
 
     /** The war/occupation layers: small and chat-driven, so simply rebuilt every tick. */
@@ -412,7 +425,9 @@ public final class AechronisRenderer {
         var window = Minecraft.getInstance().getWindow();
         // pose is in blocks; iconSize is in GUI pixels.
         float iconBlocks = (float) (s.iconSize * window.getGuiScale() / (window.getWidth() / (maxX - minX)));
+        double halfView = Math.max(maxX - minX, maxZ - minZ) / 2;
         for (Label l : s.labels) {
+            if (halfView > l.maxHalfView) continue;
             if (l.x < minX || l.x > maxX || l.z < minZ || l.z > maxZ) continue;
             label(font, buf, new Matrix4f(pose).translate((float) (l.x - cameraX), (float) (l.z - cameraZ), 0),
                     l, l.scale * blocksPerFontPixel, iconBlocks);

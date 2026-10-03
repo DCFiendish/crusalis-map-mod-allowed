@@ -107,6 +107,11 @@ public class AechronisMapData {
     // Written by the chat thread (captureTerritory) and read by the fetcher thread
     // (loadTownsData), so it's a ConcurrentHashMap.
     private final ConcurrentHashMap<String, Long> chatFlipTimestamps = new ConcurrentHashMap<>();
+    // Makes the multi-collection updates to capturedTerritoryIds / territoryDiagonalColors /
+    // chatFlipTimestamps atomic across the three writers: the towns poll (fetcher thread),
+    // captureTerritory() and annexTerritory() (chat thread). Without it a chat capture or
+    // liberation landing mid-poll is clobbered by the poll's stale snapshot.
+    private final Object occupiedStateLock = new Object();
     private static final long CHAT_FLIP_GRACE_MS = 90_000L;
 
     public static final int CORE_CHUNK_SENTINEL = 0x969696;
@@ -610,13 +615,24 @@ public class AechronisMapData {
         // contains them → retainAll leaves them alone → no flicker. If the server HAS
         // caught up mid-grace, the grace window will expire naturally on a later poll
         // and the transition detection will fire correctly then.
-        boolean occupiedSetChanged = !this.capturedTerritoryIds.equals(newCapturedFromJson);
-        this.capturedTerritoryIds.retainAll(newCapturedFromJson);
-        this.capturedTerritoryIds.addAll(newCapturedFromJson);
-        this.territoryDiagonalColors.keySet().retainAll(newCapturedFromJson);
-        for (String tid : newCapturedFromJson) {
-            Integer color = newDiagonalColors.get(tid);
-            if (color != null) this.territoryDiagonalColors.put(tid, color);
+        // Territories still inside their chat-flip grace window are protected from eviction
+        // even if the JSON hasn't caught up yet; otherwise a poll before the server updates
+        // would clear a fresh chat-driven capture's diagonal. Atomic w.r.t. capture/annex.
+        boolean occupiedSetChanged;
+        synchronized (occupiedStateLock) {
+            long graceNow = System.currentTimeMillis();
+            Set<String> protectedFromEviction = new HashSet<>(newCapturedFromJson);
+            for (Map.Entry<String, Long> entry : chatFlipTimestamps.entrySet()) {
+                if (graceNow - entry.getValue() < CHAT_FLIP_GRACE_MS) protectedFromEviction.add(entry.getKey());
+            }
+            occupiedSetChanged = !this.capturedTerritoryIds.equals(protectedFromEviction);
+            this.capturedTerritoryIds.retainAll(protectedFromEviction);
+            this.capturedTerritoryIds.addAll(newCapturedFromJson);
+            this.territoryDiagonalColors.keySet().retainAll(protectedFromEviction);
+            for (String tid : newCapturedFromJson) {
+                Integer color = newDiagonalColors.get(tid);
+                if (color != null) this.territoryDiagonalColors.put(tid, color);
+            }
         }
         if (occupiedSetChanged && rawJson != null) {
             AechronisWarCapture.snapshotTownsJson(rawJson, "occupied-set-changed");
@@ -721,9 +737,11 @@ public class AechronisMapData {
         // may not have regenerated to reflect the capture yet, and dropping it from
         // capturedTerritoryIds prematurely would cause a visible flicker of the diagonal
         // (appear -> briefly disappear -> reappear once the server catches up).
-        chatFlipTimestamps.put(tid, System.currentTimeMillis());
-        capturedTerritoryIds.add(tid);
-        territoryDiagonalColors.put(tid, color);
+        synchronized (occupiedStateLock) {
+            chatFlipTimestamps.put(tid, System.currentTimeMillis());
+            capturedTerritoryIds.add(tid);
+            territoryDiagonalColors.put(tid, color);
+        }
 
         String summary = "captureTerritory: marked tid=" + tid + " occupied by " +
                 (nation != null ? nation : capturingPlayerName) + " (base color unchanged; diagonal color set)";
@@ -788,9 +806,11 @@ public class AechronisMapData {
     public void annexTerritory(String tid, Integer newOwnerColor) {
         AechronisWarCapture.logState("annexTerritory: tid=" + tid + " newOwnerColor=" +
                 (newOwnerColor != null ? Integer.toHexString(newOwnerColor) : "null")); // no-op unless ENABLED
-        capturedTerritoryIds.remove(tid);
-        territoryDiagonalColors.remove(tid);
-        chatFlipTimestamps.remove(tid);
+        synchronized (occupiedStateLock) {
+            capturedTerritoryIds.remove(tid);
+            territoryDiagonalColors.remove(tid);
+            chatFlipTimestamps.remove(tid);
+        }
         if (newOwnerColor == null) return;
         Set<Long> chunks = territoryChunkMap.get(tid);
         if (chunks == null) return;
