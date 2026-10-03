@@ -89,6 +89,22 @@ public class DevAutoTest implements ClientModInitializer {
         step(10, () -> mc.setScreen(me.shedaniel.autoconfig.AutoConfig.getConfigScreen(AechronisConfig.class, null).get()));
         step(40, () -> shot("settings"));
         step(5, () -> mc.setScreen(null));
+        // F3+G chunk borders: fake the dev player into each relation with the target's holder.
+        step(10, () -> {
+            var id = net.minecraft.client.gui.components.debug.DebugScreenEntries.CHUNK_BORDERS;
+            if (!mc.debugEntries.isCurrentlyEnabled(id)) mc.debugEntries.toggleStatus(id);
+            command("tp @a " + (target[0] + 0.5) + " 120 " + (target[1] + 0.5) + " 30 20");
+        });
+        for (String relation : new String[]{"town", "nation", "ally", "enemy", "neutral"}) {
+            step(40, () -> {
+                fakeRelation(relation);
+                int cx = target[0] >> 4, cz = target[1] >> 4;
+                System.out.printf("[AutoTest] chunk border %s: tid=%s color=%08X%n", relation,
+                        AechronisMapMod.mapData.chunkToTerritoryId.get(net.minecraft.world.level.ChunkPos.asLong(cx, cz)),
+                        AechronisChunkBorders.color(cx, cz, 0));
+            });
+            step(20, () -> shot("borders_" + relation));
+        }
         // Nether: both maps must be empty of Crusalis data (the chunk grid still shows).
         step(10, () -> command("execute in minecraft:the_nether run tp @a " + target[0] + " 100 " + target[1]));
         step(200, () -> shot("nether_mm"));
@@ -111,6 +127,26 @@ public class DevAutoTest implements ClientModInitializer {
     }
 
     private final int[] target = new int[2];
+
+    /** Makes the dev player's town/nation stand in the given relation to the target node's holder. */
+    private void fakeRelation(String relation) {
+        AechronisMapData d = AechronisMapMod.mapData;
+        String tid = d.chunkToTerritoryId.get(net.minecraft.world.level.ChunkPos.asLong(target[0] >> 4, target[1] >> 4));
+        String nation = d.territoryHolderNation.get(tid), town = d.territoryHolderTown.get(tid);
+        String me = Minecraft.getInstance().player.getGameProfile().name();
+        boolean own = relation.equals("town") || relation.equals("nation");
+        var nations = new java.util.HashMap<>(d.playerNationMap);
+        nations.put(me, own ? nation : "AutoTestNation");
+        d.playerNationMap = nations;
+        var towns = new java.util.HashMap<>(d.playerTownMap);
+        towns.put(me, relation.equals("town") ? town : "AutoTestTown");
+        d.playerTownMap = towns;
+        d.nationAlliesMap = relation.equals("ally")
+                ? java.util.Map.of("AutoTestNation", java.util.Set.of(nation), nation, java.util.Set.of("AutoTestNation"))
+                : java.util.Map.of();
+        d.nationEnemiesMap = relation.equals("enemy")
+                ? java.util.Map.of("AutoTestNation", java.util.Set.of(nation)) : java.util.Map.of();
+    }
 
     /** isCrusalisAddress must accept crusalis.net and its subdomains only. */
     private static void checkAddresses() {

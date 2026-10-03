@@ -45,6 +45,14 @@ public class AechronisConfig implements ConfigData {
     /** In framebuffer pixels. */
     @Category("grid") @BoundedDiscrete(min = 1, max = 5) public int chunkGridWidth = 1;
 
+    // ── F3+G chunk borders, colored by your relation to the chunk's holder ──
+    @Category("borders") public boolean autoChunkBorders = true;
+    @Category("borders") @ColorPicker public int chunkBorderTownColor = 0x55FF55;
+    @Category("borders") @ColorPicker public int chunkBorderNationColor = 0x00AA00;
+    @Category("borders") @ColorPicker public int chunkBorderAllyColor = 0x00AAAA;
+    @Category("borders") @ColorPicker public int chunkBorderEnemyColor = 0xFF5555;
+    @Category("borders") @ColorPicker public int chunkBorderNeutralColor = 0xFFAA00;
+
     // ── Icons (PNGs from config/aechronismapmod/icons/) ──────
     @Category("icons") public boolean showIcons = true;
     /** Icon edge length in GUI pixels; fixed on screen at every zoom. */
