@@ -45,13 +45,20 @@ public class AechronisConfig implements ConfigData {
     /** In framebuffer pixels. */
     @Category("grid") @BoundedDiscrete(min = 1, max = 5) public int chunkGridWidth = 1;
 
-    // ── F3+G chunk borders, colored by your relation to the chunk's holder ──
+    // ── The mod's own chunk borders, colored by your relation to the chunk's holder ──
     /** The mod's own in-world chunk borders; toggled by the "Toggle Chunk Borders" key. */
     @Category("borders") public boolean showOwnChunkBorders = false;
     /** Chunks around yours to draw, 0 = only yours. */
     @Category("borders") @BoundedDiscrete(min = 0, max = 4) public int ownChunkBorderRadius = 1;
     /** Off Crusalis, outside the Overworld, or for chunks no node covers. */
     @Category("borders") @ColorPicker public int chunkBorderDefaultColor = 0xFFFF55;
+    /** Gizmo line widths, in screen pixels. */
+    @Category("borders") @BoundedDiscrete(min = 1, max = 10) public int chunkBorderLineWidth = 1;
+    @Category("borders") public boolean chunkBorderShowCorners = true;
+    @Category("borders") @BoundedDiscrete(min = 1, max = 10) public int chunkBorderCornerWidth = 4;
+    /** Blocks between lines; 0 = none. */
+    @Category("borders") @BoundedDiscrete(min = 0, max = 16) public int chunkBorderVerticalSpacing = 4;
+    @Category("borders") @BoundedDiscrete(min = 0, max = 32) public int chunkBorderHorizontalSpacing = 8;
     @Category("borders") public boolean autoChunkBorders = true;
     @Category("borders") @ColorPicker public int chunkBorderTownColor = 0x55FF55;
     @Category("borders") @ColorPicker public int chunkBorderNationColor = 0x00AA00;
@@ -75,6 +82,11 @@ public class AechronisConfig implements ConfigData {
         // A hand-edited or older config file can leave these null / out of range.
         if (resourceFilter == null) resourceFilter = "";
         if (hideBordersBelowPxPerBlock < 0) hideBordersBelowPxPerBlock = 0;
+        ownChunkBorderRadius = Math.clamp(ownChunkBorderRadius, 0, 4);
+        chunkBorderLineWidth = Math.clamp(chunkBorderLineWidth, 1, 10);
+        chunkBorderCornerWidth = Math.clamp(chunkBorderCornerWidth, 1, 10);
+        chunkBorderVerticalSpacing = Math.clamp(chunkBorderVerticalSpacing, 0, 16);
+        chunkBorderHorizontalSpacing = Math.clamp(chunkBorderHorizontalSpacing, 0, 32);
     }
 
     public static AechronisConfig get() {
