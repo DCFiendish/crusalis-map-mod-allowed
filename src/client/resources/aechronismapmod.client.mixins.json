@@ -3,7 +3,6 @@
 	"package": "com.dcfiendish.aechronismapmod.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"AechronisChunkBorderMixin",
 		"AechronisMinimapLabelMixin",
 		"AechronisMinimapMixin",
 		"AechronisWorldMapMixin"
