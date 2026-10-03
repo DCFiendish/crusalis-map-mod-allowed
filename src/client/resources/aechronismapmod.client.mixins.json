@@ -3,7 +3,9 @@
 	"package": "com.dcfiendish.aechronismapmod.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"AechronisDrawManagerMixin"
+		"AechronisMinimapLabelMixin",
+		"AechronisMinimapMixin",
+		"AechronisWorldMapMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

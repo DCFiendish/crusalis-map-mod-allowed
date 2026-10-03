@@ -17,7 +17,6 @@ public class AechronisDataFetcher {
 
     private static final String TOWNS_URL     = "https://map.crusalis.net/nodes/towns.json";
     private static final String WORLD_URL     = "https://map.crusalis.net/nodes/world.json";
-    private static final String PORTS_URL     = "https://map.crusalis.net/nodes/ports.json";
     private static final String MAP_REFERER   = "https://map.crusalis.net/";
     private static final String GIST_URL      = "https://gist.githubusercontent.com/DCFiendish/a0989e75d3d6dadb9a2af6254232a350/raw/nation_colors.json";
 
@@ -40,7 +39,7 @@ public class AechronisDataFetcher {
      * Called by AechronisMapMod's JOIN handler once a Crusalis connection is confirmed.
      * Idempotent and safe to call on every join (including backend/proxy transfers that
      * re-fire JOIN without an intervening DISCONNECT): the one-time fetches (gist colors,
-     * world+ports geometry — static-ish, no need to refresh on reconnect) only ever run
+     * world geometry — static-ish, no need to refresh on reconnect) only ever run
      * once per client session, and the recurring towns.json poll is only (re)started if
      * it isn't already running.
      */
@@ -49,7 +48,6 @@ public class AechronisDataFetcher {
             oneTimeDataFetched = true;
             scheduler.schedule(this::fetchGistColors, 0, TimeUnit.SECONDS);
             scheduler.schedule(this::fetchWorldAndTerritories, 2, TimeUnit.SECONDS);
-            scheduler.schedule(this::fetchPorts, 3, TimeUnit.SECONDS);
         }
         if (townsPollFuture == null || townsPollFuture.isCancelled()) {
             townsPollFuture = scheduler.scheduleAtFixedRate(this::fetchTownsJson, 5, 60, TimeUnit.SECONDS);
@@ -92,18 +90,6 @@ public class AechronisDataFetcher {
             System.out.println("[Crusalis] World and territory data loaded.");
         } catch (Exception e) {
             System.out.println("[Crusalis] World fetch error: " + e.getMessage());
-        }
-    }
-
-    private void fetchPorts() {
-        try {
-            System.out.println("[Crusalis] Fetching ports.json...");
-            String json = fetch(PORTS_URL);
-            JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
-            mapData.loadPortData(obj);
-            System.out.println("[Crusalis] Ports loaded.");
-        } catch (Exception e) {
-            System.out.println("[Crusalis] Ports fetch error: " + e.getMessage());
         }
     }
 
