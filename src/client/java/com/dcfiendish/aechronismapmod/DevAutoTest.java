@@ -89,21 +89,25 @@ public class DevAutoTest implements ClientModInitializer {
         step(10, () -> mc.setScreen(me.shedaniel.autoconfig.AutoConfig.getConfigScreen(AechronisConfig.class, null).get()));
         step(40, () -> shot("settings"));
         step(5, () -> mc.setScreen(null));
-        // F3+G chunk borders: fake the dev player into each relation with the target's holder.
-        step(10, () -> {
-            var id = net.minecraft.client.gui.components.debug.DebugScreenEntries.CHUNK_BORDERS;
-            if (!mc.debugEntries.isCurrentlyEnabled(id)) mc.debugEntries.toggleStatus(id);
-            command("tp @a " + (target[0] + 0.5) + " 120 " + (target[1] + 0.5) + " 30 20");
-        });
-        for (String relation : new String[]{"town", "nation", "ally", "enemy", "neutral"}) {
-            step(40, () -> {
-                fakeRelation(relation);
-                int cx = target[0] >> 4, cz = target[1] >> 4;
-                System.out.printf("[AutoTest] chunk border %s: tid=%s color=%08X%n", relation,
-                        AechronisMapMod.mapData.chunkToTerritoryId.get(net.minecraft.world.level.ChunkPos.asLong(cx, cz)),
-                        AechronisChunkBorders.color(cx, cz, 0));
+        // Chunk borders, vanilla F3+G then the mod's own: fake the dev player into each
+        // relation with the target's holder.
+        var f3g = net.minecraft.client.gui.components.debug.DebugScreenEntries.CHUNK_BORDERS;
+        step(10, () -> command("tp @a " + (target[0] + 0.5) + " 120 " + (target[1] + 0.5) + " 30 20"));
+        for (boolean own : new boolean[]{false, true}) {
+            step(5, () -> {
+                if (mc.debugEntries.isCurrentlyEnabled(f3g) == own) mc.debugEntries.toggleStatus(f3g);
+                AechronisConfig.get().showOwnChunkBorders = own;
             });
-            step(20, () -> shot("borders_" + relation));
+            for (String relation : new String[]{"town", "nation", "ally", "enemy", "neutral"}) {
+                step(40, () -> {
+                    fakeRelation(relation);
+                    int cx = target[0] >> 4, cz = target[1] >> 4;
+                    System.out.printf("[AutoTest] chunk border %s: tid=%s color=%08X%n", relation,
+                            AechronisMapMod.mapData.chunkToTerritoryId.get(net.minecraft.world.level.ChunkPos.asLong(cx, cz)),
+                            AechronisChunkBorders.color(cx, cz, 0));
+                });
+                step(20, () -> shot((own ? "own_borders_" : "borders_") + relation));
+            }
         }
         // Nether: both maps must be empty of Crusalis data (the chunk grid still shows).
         step(10, () -> command("execute in minecraft:the_nether run tp @a " + target[0] + " 100 " + target[1]));

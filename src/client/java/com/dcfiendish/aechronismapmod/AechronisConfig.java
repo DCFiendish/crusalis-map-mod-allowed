@@ -46,6 +46,12 @@ public class AechronisConfig implements ConfigData {
     @Category("grid") @BoundedDiscrete(min = 1, max = 5) public int chunkGridWidth = 1;
 
     // ── F3+G chunk borders, colored by your relation to the chunk's holder ──
+    /** The mod's own in-world chunk borders; toggled by the "Toggle Chunk Borders" key. */
+    @Category("borders") public boolean showOwnChunkBorders = false;
+    /** Chunks around yours to draw, 0 = only yours. */
+    @Category("borders") @BoundedDiscrete(min = 0, max = 4) public int ownChunkBorderRadius = 1;
+    /** Off Crusalis, outside the Overworld, or for chunks no node covers. */
+    @Category("borders") @ColorPicker public int chunkBorderDefaultColor = 0xFFFF55;
     @Category("borders") public boolean autoChunkBorders = true;
     @Category("borders") @ColorPicker public int chunkBorderTownColor = 0x55FF55;
     @Category("borders") @ColorPicker public int chunkBorderNationColor = 0x00AA00;
