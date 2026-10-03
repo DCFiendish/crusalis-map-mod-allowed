@@ -32,8 +32,10 @@ public class AechronisDataFetcher {
     // home to Crusalis's infrastructure for players who never connect there (thousands
     // of installs mostly playing elsewhere would otherwise generate constant unwanted
     // background traffic against a specific third party's server).
-    private volatile boolean oneTimeDataFetched = false;
-    private volatile ScheduledFuture<?> townsPollFuture;
+    private boolean gistFetched = false;
+    private boolean worldLoaded = false;
+    private ScheduledFuture<?> worldFetchFuture;
+    private ScheduledFuture<?> townsPollFuture;
 
     /**
      * Called by AechronisMapMod's JOIN handler once a Crusalis connection is confirmed.
@@ -44,10 +46,13 @@ public class AechronisDataFetcher {
      * it isn't already running.
      */
     public synchronized void onJoinCrusalis() {
-        if (!oneTimeDataFetched) {
-            oneTimeDataFetched = true;
+        if (!gistFetched) {
+            gistFetched = true;
             scheduler.schedule(this::fetchGistColors, 0, TimeUnit.SECONDS);
-            scheduler.schedule(this::fetchWorldAndTerritories, 2, TimeUnit.SECONDS);
+        }
+        // Also resumes a world fetch whose retries stopped when the player left Crusalis.
+        if (!worldLoaded && (worldFetchFuture == null || worldFetchFuture.isDone())) {
+            worldFetchFuture = scheduler.schedule(this::fetchWorldAndTerritories, 2, TimeUnit.SECONDS);
         }
         if (townsPollFuture == null || townsPollFuture.isCancelled()) {
             townsPollFuture = scheduler.scheduleAtFixedRate(this::fetchTownsJson, 5, 60, TimeUnit.SECONDS);
@@ -63,6 +68,10 @@ public class AechronisDataFetcher {
         if (townsPollFuture != null) {
             townsPollFuture.cancel(false);
             townsPollFuture = null;
+        }
+        if (worldFetchFuture != null) {
+            worldFetchFuture.cancel(false);
+            worldFetchFuture = null;
         }
     }
 
@@ -92,13 +101,22 @@ public class AechronisDataFetcher {
             JsonObject townsJson = JsonParser.parseString(townsStr).getAsJsonObject();
             mapData.loadWorldData(worldJson);
             mapData.loadTownsData(townsJson, townsStr);
+            synchronized (this) {
+                worldLoaded = true;
+            }
             System.out.println("[Crusalis] World and territory data loaded.");
         } catch (Throwable e) {
             // Throwable, not Exception: world.json is ~16MB, so an OutOfMemoryError while
             // parsing is real and must still trigger the retry.
-            System.out.println("[Crusalis] World fetch error: " + e.getMessage() +
-                    " - retrying in " + WORLD_FETCH_RETRY_DELAY_SECONDS + "s.");
-            scheduler.schedule(this::fetchWorldAndTerritories, WORLD_FETCH_RETRY_DELAY_SECONDS, TimeUnit.SECONDS);
+            // Retry only while still on Crusalis; otherwise the next join starts it again.
+            synchronized (this) {
+                boolean onCrusalis = townsPollFuture != null;
+                System.out.println("[Crusalis] World fetch error: " + e.getMessage() + (onCrusalis
+                        ? " - retrying in " + WORLD_FETCH_RETRY_DELAY_SECONDS + "s." : " - will retry on next join."));
+                worldFetchFuture = onCrusalis
+                        ? scheduler.schedule(this::fetchWorldAndTerritories, WORLD_FETCH_RETRY_DELAY_SECONDS, TimeUnit.SECONDS)
+                        : null;
+            }
         }
     }
 
