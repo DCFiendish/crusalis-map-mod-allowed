@@ -58,6 +58,19 @@ public class AechronisMapData {
     // chat broadcast never contains a town name, only the acting player's name.
     public volatile Map<String, String> playerNationMap = new HashMap<>();
 
+    // ── Chunk-border (F3+G) relation coloring, see AechronisRelationResolver ──
+    // Player username -> town, from the same "residents" roster as playerNationMap.
+    public volatile Map<String, String> playerTownMap = new HashMap<>();
+    // Nation -> allied / enemy nations, from towns.json's "nations" object.
+    public volatile Map<String, Set<String>> nationAlliesMap = new HashMap<>();
+    public volatile Map<String, Set<String>> nationEnemiesMap = new HashMap<>();
+    // Territory id -> current holder (town, and its nation or the town itself when
+    // nationless). An occupier (towns.json "captured") counts as the holder.
+    public volatile Map<String, String> territoryHolderTown = new HashMap<>();
+    public volatile Map<String, String> territoryHolderNation = new HashMap<>();
+    // Chunk (ChunkPos.asLong) -> territory id, built once from world.json.
+    public volatile Long2ObjectOpenHashMap<String> chunkToTerritoryId = new Long2ObjectOpenHashMap<>();
+
     // ── Occupation / annexation (captured-but-not-annexed) tracking ─────────
     // Per Nodes plugin mechanics (confirmed via https://nodes.soy/4-2-diplomacy-war.html):
     // capturing a territory's home/core chunk puts the WHOLE territory into "occupied"
@@ -164,6 +177,7 @@ public class AechronisMapData {
         Long2ObjectOpenHashMap<NodeLabelInfo> newLabelInfos = new Long2ObjectOpenHashMap<>();
         Map<String, Set<Long>> newTerritoryChunkMap = new HashMap<>();
         Map<String, Long> newCoreChunkMap = new HashMap<>();
+        Long2ObjectOpenHashMap<String> newChunkToTid = new Long2ObjectOpenHashMap<>();
         Map<String, List<NodeBorderLine>> newTerritoryDiagonals = new HashMap<>();
 
         for (Map.Entry<String, JsonElement> e : territories.entrySet()) {
@@ -181,6 +195,7 @@ public class AechronisMapData {
 
             Set<Long> chunkSet = new HashSet<>();
             for (long[] cp : chunkPairs) chunkSet.add(ChunkPos.asLong((int)cp[0], (int)cp[1]));
+            for (long pos : chunkSet) newChunkToTid.put(pos, tid);
             newTerritoryChunkMap.put(tid, chunkSet);
 
             if (coreChunkArr != null) {
@@ -268,6 +283,7 @@ public class AechronisMapData {
         this.nodeLabelInfos     = newLabelInfos;
         this.territoryChunkMap  = newTerritoryChunkMap;
         this.coreChunkMap       = newCoreChunkMap;
+        this.chunkToTerritoryId = newChunkToTid;
         this.territoryDiagonals = newTerritoryDiagonals;
 
         System.out.println("[Crusalis] Geometry built (once): " + newTerritoryChunkMap.size() +
@@ -312,6 +328,7 @@ public class AechronisMapData {
         for (String townName : townsObj.keySet()) townOwner.putIfAbsent(townName, townName);
 
         Map<String, String> territoryNation = new HashMap<>();
+        Map<String, String> territoryTown = new HashMap<>();
         Set<String> newCapturedFromJson = new HashSet<>();
         for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
             String townName = e.getKey();
@@ -336,7 +353,10 @@ public class AechronisMapData {
             for (String field : new String[]{"territories", "annexed"}) {
                 if (town.has(field)) {
                     for (JsonElement tid : town.getAsJsonArray(field)) {
-                        if (!tid.isJsonNull()) territoryNation.put(tid.getAsString(), nation);
+                        if (!tid.isJsonNull()) {
+                            territoryNation.put(tid.getAsString(), nation);
+                            territoryTown.put(tid.getAsString(), townName);
+                        }
                     }
                 }
             }
@@ -363,6 +383,7 @@ public class AechronisMapData {
             }
         }
         Map<String, String> newPlayerNationMap = new HashMap<>();
+        Map<String, String> newPlayerTownMap = new HashMap<>();
         for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
             String townName = e.getKey();
             JsonObject town = e.getValue().getAsJsonObject();
@@ -371,10 +392,14 @@ public class AechronisMapData {
             for (JsonElement uuidEl : town.getAsJsonArray("residents")) {
                 if (uuidEl.isJsonNull()) continue;
                 String name = uuidToName.get(uuidEl.getAsString());
-                if (name != null) newPlayerNationMap.put(name, nation);
+                if (name != null) {
+                    newPlayerNationMap.put(name, nation);
+                    newPlayerTownMap.put(name, townName);
+                }
             }
         }
         this.playerNationMap = newPlayerNationMap;
+        this.playerTownMap = newPlayerTownMap;
 
         // Pass 2: process every town's "captured" list AFTER all baseline ownership has
         // been written. This guarantees the occupier wins the color-resolution race, even
@@ -390,10 +415,15 @@ public class AechronisMapData {
             if (nation == null) continue;
             if (town.has("captured") && !town.get("captured").isJsonNull()) {
                 for (JsonElement tid : town.getAsJsonArray("captured")) {
-                    if (!tid.isJsonNull()) territoryNation.put(tid.getAsString(), nation);
+                    if (!tid.isJsonNull()) {
+                        territoryNation.put(tid.getAsString(), nation);
+                        territoryTown.put(tid.getAsString(), townName);
+                    }
                 }
             }
         }
+        this.territoryHolderNation = new HashMap<>(territoryNation);
+        this.territoryHolderTown = territoryTown;
 
         // Same-nation "capture": occupier and pre-capture owner resolve to the same
         // nation (one town recapturing/holding territory from another town in its own
@@ -413,10 +443,14 @@ public class AechronisMapData {
         // Nation colors read directly from towns.json's authoritative "nations" object —
         // cheap, proportional to nation count (low dozens), not territory/chunk count.
         Map<String, Integer> newNationColors = new HashMap<>();
+        Map<String, Set<String>> newAllies = new HashMap<>();
+        Map<String, Set<String>> newEnemies = new HashMap<>();
         JsonObject nationsObj = towns.has("nations") ? towns.getAsJsonObject("nations") : new JsonObject();
         for (Map.Entry<String, JsonElement> e : nationsObj.entrySet()) {
             String nation = e.getKey();
             JsonObject nationObj = e.getValue().getAsJsonObject();
+            newAllies.put(nation, stringSet(nationObj, "allies"));
+            newEnemies.put(nation, stringSet(nationObj, "enemies"));
             if (nationObj.has("color")) {
                 JsonElement colorEl = nationObj.get("color");
                 if (!colorEl.isJsonNull()) {
@@ -438,6 +472,8 @@ public class AechronisMapData {
         }
         newNationColors.putAll(gistColors);
         this.nationColors = newNationColors;
+        this.nationAlliesMap = newAllies;
+        this.nationEnemiesMap = newEnemies;
 
         // Town-derived waypoints/labels — cheap (proportional to town count), recomputed
         // every poll for simplicity; not worth diffing, this loop never touches chunks.
@@ -672,6 +708,15 @@ public class AechronisMapData {
                 }
             }
         }
+    }
+
+    /** A JSON string array field as a Set; empty when missing or null. */
+    private static Set<String> stringSet(JsonObject obj, String field) {
+        JsonElement el = obj.get(field);
+        if (el == null || !el.isJsonArray()) return Set.of();
+        Set<String> out = new HashSet<>();
+        for (JsonElement v : el.getAsJsonArray()) if (!v.isJsonNull()) out.add(v.getAsString());
+        return out;
     }
 
     private static String capitalize(String s) {
