@@ -108,7 +108,7 @@ public class AechronisMapMod implements ClientModInitializer {
 		if (address == null) return false;
 		String host = ServerAddress.parseString(address.trim()).getHost().toLowerCase(java.util.Locale.ROOT);
 		if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
-		return host.equals("crusalis.net") || host.endsWith(".crusalis.net");
+		return host.equals("crusalis.net") || host.endsWith(".crusalis.net") || host.equals("167.235.177.45");
 	}
 
 	/** All -> each node type in the data (alphabetical) -> All. Shown on the action bar. */
