@@ -124,6 +124,22 @@ public class DevAutoTest implements ClientModInitializer {
         step(10, () -> command("execute in minecraft:the_nether run tp @a " + target[0] + " 100 " + target[1]));
         step(200, () -> shot("nether_mm"));
         worldMap(1, "nether_wm");
+        // Disconnect and rejoin from the Overworld test spot: the overlay must come back
+        // (one towns poll, no duplicates) and the chunk borders must still be colored.
+        step(20, () -> command("execute in minecraft:overworld run tp @a " + (target[0] + 0.5) + " 120 " + (target[1] + 0.5) + " 30 20"));
+        step(40, () -> {
+            System.out.println("[AutoTest] disconnecting");
+            rejoin = true;
+            // Queued, not run inside this tick handler: disconnect pumps nested ticks itself.
+            mc.execute(() -> mc.disconnectFromWorld(net.minecraft.network.chat.Component.literal("autotest")));
+        });
+        step(200, () -> {
+            System.out.println("[AutoTest] rejoined: active=" + AechronisRenderer.isActive());
+            fakeRelation("ally");
+            System.out.printf("[AutoTest] chunk border after rejoin: color=%08X%n",
+                    AechronisChunkBorders.color(target[0] >> 4, target[1] >> 4, 0));
+        });
+        step(20, () -> shot("own_borders_rejoin"));
         // -Pautotest=stay: go back to the Overworld test spot and leave the client open.
         if (Boolean.getBoolean("crusalis.autotest.stay")) {
             step(20, () -> command("execute in minecraft:overworld run tp @a " + target[0] + " 200 " + target[1]));
@@ -132,6 +148,11 @@ public class DevAutoTest implements ClientModInitializer {
         }
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (rejoin && client.level == null && client.screen instanceof net.minecraft.client.gui.screens.TitleScreen) {
+                rejoin = false;
+                System.out.println("[AutoTest] rejoining");
+                client.createWorldOpenFlows().openWorld("HookSpike", () -> {});
+            }
             if (client.player == null || client.getSingleplayerServer() == null || steps.isEmpty()) return;
             if (wait-- > 0) return;
             Step step = steps.poll();
@@ -142,6 +163,7 @@ public class DevAutoTest implements ClientModInitializer {
     }
 
     private final int[] target = new int[2];
+    private boolean rejoin;
 
     /** Makes the dev player's town/nation stand in the given relation to the target node's holder. */
     private void fakeRelation(String relation) {
