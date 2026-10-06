@@ -6,6 +6,7 @@ import com.google.gson.JsonParser;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
@@ -15,8 +16,11 @@ import java.util.concurrent.TimeUnit;
 
 public class AechronisDataFetcher {
 
-    private static final String TOWNS_URL     = "https://map.crusalis.net/nodes/towns.json";
-    private static final String WORLD_URL     = "https://map.crusalis.net/nodes/world.json";
+    // The site moved to /map/ in October 2026: geometry.json replaces nodes/world.json
+    // (same territories/nodes layout) and the social API replaces nodes/towns.json
+    // (flat UUID-keyed arrays, converted back by CrusalisSocial).
+    private static final String SOCIAL_URL    = "https://map.crusalis.net/api-proxy/v1/map/social";
+    private static final String WORLD_URL     = "https://map.crusalis.net/map/map/geometry.json";
     private static final String MAP_REFERER   = "https://map.crusalis.net/";
     private static final String GIST_URL      = "https://gist.githubusercontent.com/DCFiendish/a0989e75d3d6dadb9a2af6254232a350/raw/nation_colors.json";
 
@@ -42,7 +46,7 @@ public class AechronisDataFetcher {
      * Idempotent and safe to call on every join (including backend/proxy transfers that
      * re-fire JOIN without an intervening DISCONNECT): the one-time fetches (gist colors,
      * world geometry — static-ish, no need to refresh on reconnect) only ever run
-     * once per client session, and the recurring towns.json poll is only (re)started if
+     * once per client session, and the recurring social poll is only (re)started if
      * it isn't already running.
      */
     public synchronized void onJoinCrusalis() {
@@ -61,7 +65,7 @@ public class AechronisDataFetcher {
 
     /**
      * Called on leaving Crusalis (disconnect, or JOIN resolving to a different/no
-     * server) — cancels the recurring towns.json poll so the mod goes fully quiet
+     * server) — cancels the recurring social poll so the mod goes fully quiet
      * until the player reconnects. One-time data stays cached, not cleared.
      */
     public synchronized void onLeaveCrusalis() {
@@ -87,26 +91,30 @@ public class AechronisDataFetcher {
         }
     }
 
-    // world.json drives borders and nation fills and is fetched once; without a retry a
+    // geometry.json drives borders and nation fills and is fetched once; without a retry a
     // single transient failure leaves them empty for the whole session while labels (fed
     // by the separate towns poll) still work.
     private static final long WORLD_FETCH_RETRY_DELAY_SECONDS = 10;
 
     private void fetchWorldAndTerritories() {
         try {
-            System.out.println("[Crusalis] Fetching world.json and towns.json for territory data...");
+            System.out.println("[Crusalis] Fetching geometry.json and social data for territory data...");
             String worldStr = fetch(WORLD_URL);
-            String townsStr = fetch(TOWNS_URL);
+            Response social = request(SOCIAL_URL, null);
+            if (social.status != 200) throw new java.io.IOException("social HTTP " + social.status);
             JsonObject worldJson = JsonParser.parseString(worldStr).getAsJsonObject();
-            JsonObject townsJson = JsonParser.parseString(townsStr).getAsJsonObject();
+            worldStr = null; // ~11MB; let it go before the parse below allocates more
+            JsonObject socialJson = JsonParser.parseString(social.body).getAsJsonObject();
+            CrusalisSocial.applyNameOverrides(worldJson, socialJson);
             mapData.loadWorldData(worldJson);
-            mapData.loadTownsData(townsJson, townsStr);
+            mapData.loadTownsData(CrusalisSocial.toLegacyTowns(socialJson), social.body);
             synchronized (this) {
                 worldLoaded = true;
+                socialEtag = social.etag;
             }
             System.out.println("[Crusalis] World and territory data loaded.");
         } catch (Throwable e) {
-            // Throwable, not Exception: world.json is ~16MB, so an OutOfMemoryError while
+            // Throwable, not Exception: geometry.json is ~11MB, so an OutOfMemoryError while
             // parsing is real and must still trigger the retry.
             // Retry only while still on Crusalis; otherwise the next join starts it again.
             synchronized (this) {
@@ -120,13 +128,53 @@ public class AechronisDataFetcher {
         }
     }
 
+    // The social endpoint answers If-None-Match with 304 and rate limits with 429 +
+    // Retry-After; the site itself backs off on 429, so the poll does too.
+    private volatile String socialEtag;
+    private volatile long socialBackoffUntilMs;
+    private static final long DEFAULT_RETRY_AFTER_MS = 60_000;
+
     private void fetchTownsJson() {
         try {
-            String json = fetch(TOWNS_URL);
-            JsonObject townsJson = JsonParser.parseString(json).getAsJsonObject();
-            mapData.loadTownsData(townsJson, json);
+            if (System.currentTimeMillis() < socialBackoffUntilMs) return;
+            Response res = request(SOCIAL_URL, socialEtag);
+            if (res.status == 304) return;
+            if (res.status == 429) {
+                socialBackoffUntilMs = System.currentTimeMillis() + res.retryAfterMs;
+                System.out.println("[Crusalis] Social data rate limited, waiting " + res.retryAfterMs / 1000 + "s.");
+                return;
+            }
+            if (res.status != 200) throw new java.io.IOException("HTTP " + res.status);
+            JsonObject social = JsonParser.parseString(res.body).getAsJsonObject();
+            mapData.loadTownsData(CrusalisSocial.toLegacyTowns(social), res.body);
+            socialEtag = res.etag;
         } catch (Throwable e) { // an escaped Throwable would cancel the recurring poll
             System.out.println("[Crusalis] Towns fetch error: " + e.getMessage());
+        }
+    }
+
+    private record Response(int status, String body, String etag, long retryAfterMs) {}
+
+    private Response request(String urlStr, String ifNoneMatch) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(10000);
+        conn.setRequestProperty("User-Agent", "AechronisMapMod/1.0");
+        conn.setRequestProperty("Referer", MAP_REFERER);
+        if (ifNoneMatch != null) conn.setRequestProperty("If-None-Match", ifNoneMatch);
+        try {
+            int status = conn.getResponseCode();
+            if (status != 200) {
+                long retryAfterMs = DEFAULT_RETRY_AFTER_MS;
+                String ra = conn.getHeaderField("Retry-After");
+                if (ra != null) {
+                    try { retryAfterMs = Math.max(1, Long.parseLong(ra.trim())) * 1000; } catch (NumberFormatException ignored) {}
+                }
+                return new Response(status, null, null, retryAfterMs);
+            }
+            return new Response(status, read(conn.getInputStream()), conn.getHeaderField("ETag"), 0);
+        } finally {
+            conn.disconnect();
         }
     }
 
@@ -139,7 +187,11 @@ public class AechronisDataFetcher {
         if (urlStr.startsWith("https://map.crusalis.net/")) {
             conn.setRequestProperty("Referer", MAP_REFERER);
         }
-        try (InputStream is = conn.getInputStream();
+        return read(conn.getInputStream());
+    }
+
+    private static String read(InputStream in) throws Exception {
+        try (InputStream is = in;
              BufferedReader reader = new BufferedReader(
                      new InputStreamReader(is, StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();
