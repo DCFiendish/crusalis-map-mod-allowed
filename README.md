@@ -1,6 +1,5 @@
 # Crusalis Map Mod
 
-REQUIRES EXACT XAEROS VERSIONS. DO NOT BOTHER ME IF YOU DO NOT HAVE THE CORRECT VERSIONS.
 
 A Fabric client mod that adds a live nation/territory overlay to Xaero's
 Minimap and World Map, built for the [Nodes](https://nodes.soy/) town/nation
@@ -26,9 +25,8 @@ resource node borders/labels, town and nation name labels, and port markers.
 ## Requirements
 
 - Fabric Loader, Fabric API
-- [XaeroPlus](https://modrinth.com/mod/xaeroplus) 2.30.10+fabric-1.21.11
-- [Xaero's Minimap](https://modrinth.com/mod/xaeros-minimap) 25.3.10
-- [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.40.11
+- [Xaero's Minimap](https://modrinth.com/mod/xaeros-minimap) 
+- [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 
 - Cloth Config, Mod Menu
 
 ## Building
