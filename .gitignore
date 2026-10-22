@@ -44,3 +44,6 @@ libs/*.jar
 
 # local scratch/debug tooling — not part of the shipped mod
 tools/
+
+# built release jars
+release/

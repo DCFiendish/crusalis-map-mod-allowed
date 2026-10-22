@@ -13,12 +13,26 @@ base {
 repositories {
 	maven { url "https://maven.fabricmc.net/" }
 	maven { url "https://api.modrinth.com/maven" }
+	maven { url "https://maven.shedaniel.me/" }
 	maven { url "https://chocolateminecraft.com/maven" }
 }
 
 
 loom {
 	splitEnvironmentSourceSets()
+
+	runs {
+		client {
+			// Draw live Crusalis data in the dev client's singleplayer worlds.
+			vmArgs "-Dcrusalis.devForceActive=true"
+			// `gradlew runClient -Pautotest`: screenshot both maps and quit (DevAutoTest).
+			if (project.hasProperty("autotest")) {
+				vmArgs "-Dcrusalis.autotest=true"
+				if (project.property("autotest") == "stay") vmArgs "-Dcrusalis.autotest.stay=true"
+				programArgs "--quickPlaySingleplayer", "HookSpike"
+			}
+		}
+	}
 
 	mods {
 		"aechronis-map-mod" {
@@ -34,13 +48,18 @@ dependencies {
 	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 
-	modImplementation "maven.modrinth:xaeroplus:2.30.10+fabric-1.21.11"
-	modCompileOnly "xaero.map:xaeroworldmap-fabric-1.21.11:1.40.11"
-	modCompileOnly "xaero.minimap:xaerominimap-fabric-1.21.11:25.3.10"
-	modCompileOnly files("libs/xaerolib-1.1.0-ab30ae2ca666ba3a.jar")
-	modCompileOnly files("libs/xaerolib-1.1.15-8d2180f17290a347.jar")
-	modImplementation "maven.modrinth:cloth-config:19.0.147+fabric"
-	modImplementation "maven.modrinth:modmenu:15.0.0"
+	// Xaero's maps (and XaeroLib, pulled in transitively). Compile-only: users install their own.
+	// Our mixins hook into these versions' internals — see docs/xaero-hooks.md.
+	modCompileOnly "xaero.map:xaeroworldmap-fabric-1.21.11:1.46.0"
+	modCompileOnly "xaero.minimap:xaerominimap-fabric-1.21.11:26.5.0"
+	modLocalRuntime "xaero.map:xaeroworldmap-fabric-1.21.11:1.46.0"
+	modLocalRuntime "xaero.minimap:xaerominimap-fabric-1.21.11:26.5.0"
+	// shedaniel's maven, not Modrinth: its POM brings cloth-basic-math, which the settings screen needs.
+	modImplementation("me.shedaniel.cloth:cloth-config-fabric:21.11.153") { exclude group: "net.fabricmc.fabric-api" }
+	// Mod Menu is optional for players (the O key opens settings too); 17.x is the 1.21.11 line.
+	modCompileOnly "maven.modrinth:modmenu:17.0.1"
+	modLocalRuntime "maven.modrinth:modmenu:17.0.1"
+	modLocalRuntime "maven.modrinth:placeholder-api:2.8.2+1.21.10" // Mod Menu dependency
 }
 
 processResources {
