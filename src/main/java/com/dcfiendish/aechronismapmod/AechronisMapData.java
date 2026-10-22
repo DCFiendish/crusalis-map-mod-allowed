@@ -22,7 +22,6 @@ public class AechronisMapData {
     private final Long2LongOpenHashMap nationChunksRaw = new Long2LongOpenHashMap();
     private final Object nationChunksLock = new Object();
 
-
     // ── Geometry derived purely from world.json ─────────────────────────────
     // world.json is fetched ONCE per client session (see AechronisDataFetcher —
     // fetchWorldAndTerritories runs once via schedule(), never repeats; only
@@ -46,6 +45,8 @@ public class AechronisMapData {
     // poll (cheap, proportional to nation count). Filler nations (Impassable, Wilderness)
     // are skipped. Keyed by a synthetic position key like the others.
     public volatile List<NationLabelInfo> nationLabelInfos = new ArrayList<>();
+    /** Node type (lower case, e.g. "wheat") -> map.crusalis.net icon key (e.g. "wheat"), from world.json "nodes". */
+    public volatile Map<String, String> nodeTypeIcons = Map.of();
     public volatile List<TownWaypoint> townWaypoints = new ArrayList<>();
     public volatile Map<String, String> townNationMap = new HashMap<>();
     // Player username -> nation. Built each towns.json poll from each town's
@@ -57,9 +58,9 @@ public class AechronisMapData {
     // chat broadcast never contains a town name, only the acting player's name.
     public volatile Map<String, String> playerNationMap = new HashMap<>();
 
-    // ── Ports (from ports.json, fetched ONCE — ports are static) ────────────
-    // Each port: name + (x,z) + group ids, colored by group. Built once in loadPortData().
-    public volatile List<PortInfo> ports = new ArrayList<>();
+    // Nation -> allied nations, from towns.json's "nations" object when the feed has it
+    // (the map.crusalis.net social feed doesn't), for relation-colored war markers.
+    public volatile Map<String, Set<String>> nationAlliesMap = new HashMap<>();
 
     // ── Occupation / annexation (captured-but-not-annexed) tracking ─────────
     // Per Nodes plugin mechanics (confirmed via https://nodes.soy/4-2-diplomacy-war.html):
@@ -78,6 +79,22 @@ public class AechronisMapData {
     // sufficient on its own since it's authoritative.
     public final Set<String> capturedTerritoryIds = ConcurrentHashMap.newKeySet();
     public final ConcurrentHashMap<String, Integer> territoryDiagonalColors = new ConcurrentHashMap<>();
+    // Occupier per captured territory (its nation, or the player's name when unresolved),
+    // kept alongside territoryDiagonalColors for relation-colored diagonals.
+    public final ConcurrentHashMap<String, String> territoryDiagonalNations = new ConcurrentHashMap<>();
+
+    // ── Warzones ────────────────────────────────────────────────────────────
+    // Crusalis's mid-week warzone event runs on towns named "Warzone1", "Warzone2", ... in
+    // the social feed (normally nationless; a territory nobody has captured shows the
+    // town's nation, if it has one). Nations fight over those towns' territories with
+    // captures only (never annexed) and whoever holds one longest keeps it, so a warzone
+    // territory is filled in its current holder's color (no occupied diagonal, no two-phase
+    // hold) and each warzone is outlined and labelled as one zone.
+    public volatile Warzones warzones = Warzones.EMPTY;
+    /** Warzone territory id -> current holder (nation, or the town when nationless). */
+    public final ConcurrentHashMap<String, String> warzoneHolders = new ConcurrentHashMap<>();
+    private static final java.util.regex.Pattern WARZONE_TOWN =
+            java.util.regex.Pattern.compile("(?i)warzone[ _-]?\\d*");
 
     // Set to true only when an actual OWNERSHIP change was applied this poll (new
     // owner, or an owning nation's color itself changed) — NOT set unconditionally
@@ -110,6 +127,11 @@ public class AechronisMapData {
     // Written by the chat thread (captureTerritory) and read by the fetcher thread
     // (loadTownsData), so it's a ConcurrentHashMap.
     private final ConcurrentHashMap<String, Long> chatFlipTimestamps = new ConcurrentHashMap<>();
+    // Makes the multi-collection updates to capturedTerritoryIds / territoryDiagonalColors /
+    // chatFlipTimestamps atomic across the three writers: the towns poll (fetcher thread),
+    // captureTerritory() and annexTerritory() (chat thread). Without it a chat capture or
+    // liberation landing mid-poll is clobbered by the poll's stale snapshot.
+    private final Object occupiedStateLock = new Object();
     private static final long CHAT_FLIP_GRACE_MS = 90_000L;
 
     public static final int CORE_CHUNK_SENTINEL = 0x969696;
@@ -141,64 +163,18 @@ public class AechronisMapData {
      */
     public void loadWorldData(JsonObject world) {
         this.worldData = world;
-        rebuildGeometry(world);
-    }
-
-    /**
-     * Called once per session (ports are static). Parses ports.json:
-     *   { "meta": {...}, "ports": { "<name>": { "x":.., "z":.., "groups":[".."] }, ... } }
-     * Builds a flat list of port markers (name + position + group-derived color). Group
-     * color is assigned from a fixed palette, deterministically by first-seen group
-     * order within this load.
-     */
-    public void loadPortData(JsonObject portsJson) {
-        List<PortInfo> newPorts = new ArrayList<>();
-        Map<String, Integer> groupColor = new LinkedHashMap<>(); // group id -> color
-
-        JsonObject portsObj = portsJson.has("ports") && !portsJson.get("ports").isJsonNull()
-                ? portsJson.getAsJsonObject("ports") : new JsonObject();
-
-        for (Map.Entry<String, JsonElement> e : portsObj.entrySet()) {
-            String name = e.getKey();
-            JsonObject p = e.getValue().getAsJsonObject();
-            if (!p.has("x") || !p.has("z") || p.get("x").isJsonNull() || p.get("z").isJsonNull()) continue;
-            int x = p.get("x").getAsInt();
-            int z = p.get("z").getAsInt();
-
-            List<String> groups = new ArrayList<>();
-            if (p.has("groups") && !p.get("groups").isJsonNull()) {
-                for (JsonElement g : p.getAsJsonArray("groups")) {
-                    if (!g.isJsonNull()) groups.add(g.getAsString());
+        Map<String, String> icons = new HashMap<>();
+        if (world.has("nodes") && world.get("nodes").isJsonObject()) {
+            for (Map.Entry<String, JsonElement> e : world.getAsJsonObject("nodes").entrySet()) {
+                JsonObject node = e.getValue().getAsJsonObject();
+                if (node.has("icon") && !node.get("icon").isJsonNull()) {
+                    icons.put(e.getKey().toLowerCase(java.util.Locale.ROOT), node.get("icon").getAsString());
                 }
             }
-
-            // Color from the FIRST group (deterministic palette by first-seen order).
-            int color = 0xFFFFFF;
-            if (!groups.isEmpty()) {
-                String firstGroup = groups.get(0);
-                color = groupColor.computeIfAbsent(firstGroup,
-                        k -> PORT_GROUP_PALETTE[groupColor.size() % PORT_GROUP_PALETTE.length]);
-            }
-
-            newPorts.add(new PortInfo(name, x, z, color));
         }
-
-        this.ports = newPorts;
-        System.out.println("[Crusalis] Loaded " + newPorts.size() + " ports, " +
-                groupColor.size() + " groups.");
+        this.nodeTypeIcons = Map.copyOf(icons);
+        rebuildGeometry(world);
     }
-
-    // Fixed palette for port groups — distinct, readable hues. Cycled by group order.
-    private static final int[] PORT_GROUP_PALETTE = {
-            0x00FFFF, // cyan
-            0xFF00FF, // magenta
-            0xFFAA00, // orange
-            0x00FF00, // green
-            0xFF5555, // red
-            0x5555FF, // blue
-            0xFFFF00, // yellow
-            0xAA00FF  // purple
-    };
 
     private void rebuildGeometry(JsonObject world) {
         JsonObject territories = world.has("territories") ?
@@ -255,26 +231,24 @@ public class AechronisMapData {
                 if (!clipped.isEmpty()) newTerritoryDiagonals.put(tid, clipped);
             }
 
-            // Collect node type names. Border still renders for ANY node-bearing
-            // territory (including basic-only) — unchanged. The LABEL, however, only
-            // shows "specific resource" nodes: "basic" is filtered out entirely, and
-            // a territory whose only node type is basic gets no label at all.
+            // Collect node type names. Every node gets a label, "basic" included, the same
+            // as map.crusalis.net (which draws an icon for each of a territory's nodes).
             List<String> nodeTypeNames = new ArrayList<>();
             for (JsonElement n : nodes) {
                 if (!n.isJsonNull()) nodeTypeNames.add(n.getAsString());
             }
 
-            if (!chunkPairs.isEmpty() && !nodeTypeNames.isEmpty()) {
+            // Borders for EVERY territory with chunks — live world.json has thousands with
+            // an empty "nodes" list, and those were left unbordered before.
+            if (!chunkPairs.isEmpty()) {
                 List<int[]> borders = getBorderLines(chunkPairs);
                 for (int[] line : borders) {
                     newBorderLines.add(new NodeBorderLine(line[0], line[1], line[2], line[3]));
                 }
+            }
 
-                // Label-only filtering: drop "basic", keep real resources in order.
-                List<String> labelTypes = new ArrayList<>();
-                for (String t : nodeTypeNames) {
-                    if (!t.equalsIgnoreCase("basic")) labelTypes.add(t);
-                }
+            if (!chunkPairs.isEmpty() && !nodeTypeNames.isEmpty()) {
+                List<String> labelTypes = new ArrayList<>(new java.util.LinkedHashSet<>(nodeTypeNames));
 
                 if (!labelTypes.isEmpty()) {
                     int labelX, labelZ;
@@ -298,7 +272,8 @@ public class AechronisMapData {
                     int labelColor = nodeLabelColor(labelTypes.get(0));
 
                     long textKey = ChunkPos.asLong(labelX >> 4, labelZ >> 4);
-                    newLabelInfos.put(textKey, new NodeLabelInfo(label.toString(), labelX, labelZ, labelColor));
+                    newLabelInfos.put(textKey, new NodeLabelInfo(label.toString(), labelX, labelZ, labelColor,
+                            labelTypes.stream().map(t -> t.toLowerCase(java.util.Locale.ROOT)).toList(), tid));
                 }
             }
         }
@@ -343,13 +318,33 @@ public class AechronisMapData {
 
         this.townNationMap = new HashMap<>(townNation);
 
+        JsonObject townsObj = towns.has("towns") ? towns.getAsJsonObject("towns") : new JsonObject();
+        // Ownership key per town: its nation, or the town itself when it has none (e.g. a
+        // fresh map with no nations yet), so nationless towns still get filled in their
+        // own town color instead of not rendering at all.
+        Map<String, String> townOwner = new HashMap<>(townNation);
+        for (String townName : townsObj.keySet()) townOwner.putIfAbsent(townName, townName);
+
+        // Warzone towns (see warzones): named Warzone1, Warzone2, ... Usually nationless, but
+        // one can join a nation mid-event, so the name alone decides. A nationless one's land
+        // is never filled in the town's own color, only its holder's.
+        Map<String, JsonObject> warzoneTowns = new LinkedHashMap<>();
+        Map<String, String> warzoneOfTid = new HashMap<>(); // territory id -> warzone town
+        for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
+            if (!WARZONE_TOWN.matcher(e.getKey().trim()).matches()) continue;
+            JsonObject town = e.getValue().getAsJsonObject();
+            warzoneTowns.put(e.getKey(), town);
+            for (String field : new String[]{"territories", "annexed"}) {
+                for (String tid : stringSet(town, field)) warzoneOfTid.put(tid, e.getKey());
+            }
+        }
+
         Map<String, String> territoryNation = new HashMap<>();
         Set<String> newCapturedFromJson = new HashSet<>();
-        JsonObject townsObj = towns.has("towns") ? towns.getAsJsonObject("towns") : new JsonObject();
         for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
             String townName = e.getKey();
             JsonObject town = e.getValue().getAsJsonObject();
-            String nation = townNation.get(townName);
+            String nation = townOwner.get(townName);
             if (town.has("captured") && !town.get("captured").isJsonNull()) {
                 // Skip filler nations' captured lists entirely — Impassable "owns" and
                 // "captures" a lot of terrain by design, and rendering diagonals on all
@@ -362,7 +357,7 @@ public class AechronisMapData {
                     }
                 }
             }
-            if (nation == null) continue;
+            if (nation == null || (warzoneTowns.containsKey(townName) && !townNation.containsKey(townName))) continue;
             // Pass 1 for this town: write territories + annexed only. The captured list
             // is deliberately deferred so it can be processed AFTER every town's baseline
             // ownership is set — see the second loop below.
@@ -399,7 +394,7 @@ public class AechronisMapData {
         for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
             String townName = e.getKey();
             JsonObject town = e.getValue().getAsJsonObject();
-            String nation = townNation.get(townName);
+            String nation = townOwner.get(townName);
             if (nation == null || !town.has("residents") || town.get("residents").isJsonNull()) continue;
             for (JsonElement uuidEl : town.getAsJsonArray("residents")) {
                 if (uuidEl.isJsonNull()) continue;
@@ -416,17 +411,29 @@ public class AechronisMapData {
         // final territoryNation for that tid is whichever town happened to be iterated
         // last — nondeterministic across HashMap iteration orders, and we saw this cause
         // occupied diagonals to render in the defender's color instead of the occupier's.
+        Map<String, Integer> captorCount = new HashMap<>();
         for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
             String townName = e.getKey();
             JsonObject town = e.getValue().getAsJsonObject();
-            String nation = townNation.get(townName);
+            String nation = townOwner.get(townName);
             if (nation == null) continue;
             if (town.has("captured") && !town.get("captured").isJsonNull()) {
                 for (JsonElement tid : town.getAsJsonArray("captured")) {
-                    if (!tid.isJsonNull()) territoryNation.put(tid.getAsString(), nation);
+                    if (tid.isJsonNull()) continue;
+                    territoryNation.put(tid.getAsString(), nation);
+                    captorCount.merge(tid.getAsString(), 1, Integer::sum);
                 }
             }
         }
+        // A territory two towns both claim to occupy has no single occupier: drop the
+        // occupation and keep the owner, as map.crusalis.net does.
+        captorCount.forEach((tid, n) -> {
+            if (n < 2) return;
+            newCapturedFromJson.remove(tid);
+            String owner = baselineTerritoryNation.get(tid);
+            if (owner != null) territoryNation.put(tid, owner);
+            else territoryNation.remove(tid);
+        });
 
         // Same-nation "capture": occupier and pre-capture owner resolve to the same
         // nation (one town recapturing/holding territory from another town in its own
@@ -442,14 +449,19 @@ public class AechronisMapData {
             String ownerNation = baselineTerritoryNation.get(tid);
             return occupierNation != null && occupierNation.equals(ownerNation);
         });
+        // Warzone captures are the holder's land for as long as they hold it: colored like
+        // ownership by the diff below, not held as occupied with a diagonal.
+        newCapturedFromJson.removeAll(warzoneOfTid.keySet());
 
         // Nation colors read directly from towns.json's authoritative "nations" object —
         // cheap, proportional to nation count (low dozens), not territory/chunk count.
         Map<String, Integer> newNationColors = new HashMap<>();
+        Map<String, Set<String>> newAllies = new HashMap<>();
         JsonObject nationsObj = towns.has("nations") ? towns.getAsJsonObject("nations") : new JsonObject();
         for (Map.Entry<String, JsonElement> e : nationsObj.entrySet()) {
             String nation = e.getKey();
             JsonObject nationObj = e.getValue().getAsJsonObject();
+            newAllies.put(nation, stringSet(nationObj, "allies"));
             if (nationObj.has("color")) {
                 JsonElement colorEl = nationObj.get("color");
                 if (!colorEl.isJsonNull()) {
@@ -460,8 +472,18 @@ public class AechronisMapData {
                 }
             }
         }
+        // Nationless towns are keyed by town name (see townOwner) and use their own color.
+        for (Map.Entry<String, JsonElement> e : townsObj.entrySet()) {
+            if (townNation.containsKey(e.getKey())) continue;
+            JsonElement colorEl = e.getValue().getAsJsonObject().get("color");
+            if (colorEl != null && colorEl.isJsonArray() && colorEl.getAsJsonArray().size() >= 3) {
+                JsonArray c = colorEl.getAsJsonArray();
+                newNationColors.putIfAbsent(e.getKey(), rgb(c.get(0).getAsInt(), c.get(1).getAsInt(), c.get(2).getAsInt()));
+            }
+        }
         newNationColors.putAll(gistColors);
         this.nationColors = newNationColors;
+        this.nationAlliesMap = newAllies;
 
         // Town-derived waypoints/labels — cheap (proportional to town count), recomputed
         // every poll for simplicity; not worth diffing, this loop never touches chunks.
@@ -519,6 +541,8 @@ public class AechronisMapData {
             System.out.println("[Crusalis] Geometry not built yet, skipping ownership diff this poll.");
             return;
         }
+
+        updateWarzones(warzoneTowns, warzoneOfTid, territoryNation);
 
         // ---- Ownership diff: only touch territories whose resolved color changed ----
         Map<String, Integer> newDiagonalColors = new HashMap<>(); // tid -> color, for ALL owned territories (cheap)
@@ -639,13 +663,27 @@ public class AechronisMapData {
         // contains them → retainAll leaves them alone → no flicker. If the server HAS
         // caught up mid-grace, the grace window will expire naturally on a later poll
         // and the transition detection will fire correctly then.
-        boolean occupiedSetChanged = !this.capturedTerritoryIds.equals(newCapturedFromJson);
-        this.capturedTerritoryIds.retainAll(newCapturedFromJson);
-        this.capturedTerritoryIds.addAll(newCapturedFromJson);
-        this.territoryDiagonalColors.keySet().retainAll(newCapturedFromJson);
-        for (String tid : newCapturedFromJson) {
-            Integer color = newDiagonalColors.get(tid);
-            if (color != null) this.territoryDiagonalColors.put(tid, color);
+        // Territories still inside their chat-flip grace window are protected from eviction
+        // even if the JSON hasn't caught up yet; otherwise a poll before the server updates
+        // would clear a fresh chat-driven capture's diagonal. Atomic w.r.t. capture/annex.
+        boolean occupiedSetChanged;
+        synchronized (occupiedStateLock) {
+            long graceNow = System.currentTimeMillis();
+            Set<String> protectedFromEviction = new HashSet<>(newCapturedFromJson);
+            for (Map.Entry<String, Long> entry : chatFlipTimestamps.entrySet()) {
+                if (graceNow - entry.getValue() < CHAT_FLIP_GRACE_MS) protectedFromEviction.add(entry.getKey());
+            }
+            occupiedSetChanged = !this.capturedTerritoryIds.equals(protectedFromEviction);
+            this.capturedTerritoryIds.retainAll(protectedFromEviction);
+            this.capturedTerritoryIds.addAll(newCapturedFromJson);
+            this.territoryDiagonalColors.keySet().retainAll(protectedFromEviction);
+            this.territoryDiagonalNations.keySet().retainAll(protectedFromEviction);
+            for (String tid : newCapturedFromJson) {
+                Integer color = newDiagonalColors.get(tid);
+                if (color != null) this.territoryDiagonalColors.put(tid, color);
+                String occupier = territoryNation.get(tid);
+                if (occupier != null) this.territoryDiagonalNations.put(tid, occupier);
+            }
         }
         if (occupiedSetChanged && rawJson != null) {
             AechronisWarCapture.snapshotTownsJson(rawJson, "occupied-set-changed");
@@ -661,6 +699,82 @@ public class AechronisMapData {
                 newCapturedFromJson.size() + " captured/occupied territories.";
         System.out.println("[Crusalis] " + pollSummary);
         AechronisWarCapture.logState(pollSummary); // no-op unless AechronisWarCapture.ENABLED
+    }
+
+    /**
+     * Refreshes warzone holders from this poll and rebuilds the zones when the set of
+     * warzone towns or their territories changed (rare: zones are set up per event).
+     * Holders still inside a chat capture's grace window keep the chat result.
+     */
+    private void updateWarzones(Map<String, JsonObject> warzoneTowns, Map<String, String> warzoneOfTid,
+                                Map<String, String> territoryNation) {
+        long now = System.currentTimeMillis();
+        warzoneHolders.keySet().removeIf(tid -> !warzoneOfTid.containsKey(tid));
+        for (String tid : warzoneOfTid.keySet()) {
+            Long flippedAt = chatFlipTimestamps.get(tid);
+            if (flippedAt != null && now - flippedAt < CHAT_FLIP_GRACE_MS) continue;
+            String holder = territoryNation.get(tid);
+            if (holder != null) warzoneHolders.put(tid, holder);
+            else warzoneHolders.remove(tid);
+        }
+
+        Warzones current = warzones;
+        Set<String> names = new HashSet<>();
+        for (WarzoneArea a : current.areas()) names.add(a.name());
+        if (current.territoryIds().equals(warzoneOfTid.keySet()) && names.equals(warzoneTowns.keySet())) return;
+
+        List<WarzoneArea> areas = new ArrayList<>();
+        for (Map.Entry<String, JsonObject> e : warzoneTowns.entrySet()) {
+            Set<Long> chunks = new HashSet<>();
+            for (Map.Entry<String, String> t : warzoneOfTid.entrySet()) {
+                if (!t.getValue().equals(e.getKey())) continue;
+                Set<Long> tc = territoryChunkMap.get(t.getKey());
+                if (tc != null) chunks.addAll(tc);
+            }
+            if (chunks.isEmpty()) continue;
+            List<long[]> pairs = new ArrayList<>();
+            for (long pos : chunks) pairs.add(new long[]{ChunkPos.getX(pos), ChunkPos.getZ(pos)});
+            List<NodeBorderLine> outline = new ArrayList<>();
+            for (int[] l : getBorderLines(pairs)) outline.add(new NodeBorderLine(l[0], l[1], l[2], l[3]));
+
+            // Name at the town's spawn (where its town label would be), else the zone's middle.
+            int labelX, labelZ;
+            JsonElement spawnEl = e.getValue().get("spawn");
+            if (spawnEl != null && spawnEl.isJsonArray() && spawnEl.getAsJsonArray().size() >= 3) {
+                labelX = spawnEl.getAsJsonArray().get(0).getAsInt();
+                labelZ = spawnEl.getAsJsonArray().get(2).getAsInt();
+            } else {
+                long sx = 0, sz = 0;
+                for (long[] p : pairs) { sx += p[0]; sz += p[1]; }
+                labelX = (int) (sx * 16 / pairs.size()) + 8;
+                labelZ = (int) (sz * 16 / pairs.size()) + 8;
+            }
+            areas.add(new WarzoneArea(e.getKey(), List.copyOf(outline), labelX, labelZ));
+        }
+        warzones = new Warzones(Set.copyOf(warzoneOfTid.keySet()), List.copyOf(areas));
+        dirty = true;
+        System.out.println("[Crusalis] Warzones: " + areas.size() + " zones, " + warzoneOfTid.size() + " territories.");
+    }
+
+    /**
+     * Chat capture (or liberation) of a warzone territory: the capturer holds it now, so
+     * it takes their color straight away. The poll confirms it after the grace window.
+     */
+    private void holdWarzone(String tid, String playerName) {
+        ResolvedNation resolved = resolvePlayerNation(playerName, rgb(200, 200, 200));
+        String holder = resolved.nation() != null ? resolved.nation() : playerName;
+        synchronized (occupiedStateLock) {
+            chatFlipTimestamps.put(tid, System.currentTimeMillis());
+            capturedTerritoryIds.remove(tid);
+            territoryDiagonalColors.remove(tid);
+            territoryDiagonalNations.remove(tid);
+        }
+        warzoneHolders.put(tid, holder);
+        applyTerritoryColor(tid, resolved.color());
+        this.dirty = true;
+        String summary = "holdWarzone: tid=" + tid + " now held by " + holder;
+        System.out.println("[Crusalis] " + summary);
+        AechronisWarCapture.logState(summary); // no-op unless AechronisWarCapture.ENABLED
     }
 
     /** Applies (or removes) a territory's resolved color to its actual chunks.
@@ -685,6 +799,15 @@ public class AechronisMapData {
                 }
             }
         }
+    }
+
+    /** A JSON string array field as a Set; empty when missing or null. */
+    private static Set<String> stringSet(JsonObject obj, String field) {
+        JsonElement el = obj.get(field);
+        if (el == null || !el.isJsonArray()) return Set.of();
+        Set<String> out = new HashSet<>();
+        for (JsonElement v : el.getAsJsonArray()) if (!v.isJsonNull()) out.add(v.getAsString());
+        return out;
     }
 
     private static String capitalize(String s) {
@@ -736,6 +859,10 @@ public class AechronisMapData {
      * playerNationMap (built in loadTownsData()), not townNationMap.
      */
     public void captureTerritory(String tid, String capturingPlayerName) {
+        if (warzones.territoryIds().contains(tid)) {
+            holdWarzone(tid, capturingPlayerName);
+            return;
+        }
         Set<Long> chunks = territoryChunkMap.get(tid);
         if (chunks == null) {
             System.out.println("[Crusalis] captureTerritory: no chunks found for tid=" + tid);
@@ -750,9 +877,12 @@ public class AechronisMapData {
         // may not have regenerated to reflect the capture yet, and dropping it from
         // capturedTerritoryIds prematurely would cause a visible flicker of the diagonal
         // (appear -> briefly disappear -> reappear once the server catches up).
-        chatFlipTimestamps.put(tid, System.currentTimeMillis());
-        capturedTerritoryIds.add(tid);
-        territoryDiagonalColors.put(tid, color);
+        synchronized (occupiedStateLock) {
+            chatFlipTimestamps.put(tid, System.currentTimeMillis());
+            capturedTerritoryIds.add(tid);
+            territoryDiagonalColors.put(tid, color);
+            territoryDiagonalNations.put(tid, nation != null ? nation : capturingPlayerName);
+        }
 
         String summary = "captureTerritory: marked tid=" + tid + " occupied by " +
                 (nation != null ? nation : capturingPlayerName) + " (base color unchanged; diagonal color set)";
@@ -776,6 +906,10 @@ public class AechronisMapData {
      * JSON-poll-detected transition — so just resolve the color and delegate to it.
      */
     public void liberateTerritory(String tid, String liberatingPlayerName) {
+        if (warzones.territoryIds().contains(tid)) {
+            holdWarzone(tid, liberatingPlayerName);
+            return;
+        }
         ResolvedNation resolved = resolvePlayerNation(liberatingPlayerName, rgb(200, 200, 200));
         String nation = resolved.nation();
         int color = resolved.color();
@@ -817,9 +951,12 @@ public class AechronisMapData {
     public void annexTerritory(String tid, Integer newOwnerColor) {
         AechronisWarCapture.logState("annexTerritory: tid=" + tid + " newOwnerColor=" +
                 (newOwnerColor != null ? Integer.toHexString(newOwnerColor) : "null")); // no-op unless ENABLED
-        capturedTerritoryIds.remove(tid);
-        territoryDiagonalColors.remove(tid);
-        chatFlipTimestamps.remove(tid);
+        synchronized (occupiedStateLock) {
+            capturedTerritoryIds.remove(tid);
+            territoryDiagonalColors.remove(tid);
+            territoryDiagonalNations.remove(tid);
+            chatFlipTimestamps.remove(tid);
+        }
         if (newOwnerColor == null) return;
         Set<Long> chunks = territoryChunkMap.get(tid);
         if (chunks == null) return;
@@ -839,7 +976,8 @@ public class AechronisMapData {
     /** Resolves a player's nation and that nation's configured color via
      *  playerNationMap, falling back to `fallback` for the color when the player can't
      *  be resolved to a nation or the nation has no configured color. Centralizes the
-     *  lookup-with-fallback pattern shared by captureTerritory() and liberateTerritory(). */
+     *  lookup-with-fallback pattern shared by the chat-driven territory events above
+     *  (captureTerritory, liberateTerritory, holdWarzone). */
     private ResolvedNation resolvePlayerNation(String playerName, int fallback) {
         String nation = playerNationMap.get(playerName);
         int color = nation != null ? nationColors.getOrDefault(nation, fallback) : fallback;
@@ -975,12 +1113,25 @@ public class AechronisMapData {
         public final String label;
         public final int x, z;
         public final int color; // RGB, no alpha
+        /** Node types in label order, lower case (e.g. "wheat", "ultra-mega-node"); empty for towns. */
+        public final List<String> resources;
+        /** The territory a node label belongs to; null for towns. */
+        public final String territoryId;
         public NodeLabelInfo(String label, int x, int z) {
-            this(label, x, z, 0xFFFFFF);
+            this(label, x, z, 0xFFFFFF, List.of(), null);
         }
-        public NodeLabelInfo(String label, int x, int z, int color) {
-            this.label = label; this.x = x; this.z = z; this.color = color;
+        public NodeLabelInfo(String label, int x, int z, int color, List<String> resources, String territoryId) {
+            this.label = label; this.x = x; this.z = z; this.color = color; this.resources = resources;
+            this.territoryId = territoryId;
         }
+    }
+
+    /** One warzone town's territories as a zone: its outer outline and where its name goes. */
+    public record WarzoneArea(String name, List<NodeBorderLine> outline, int labelX, int labelZ) {}
+
+    /** Every warzone territory id, and the zones they make up. Replaced wholesale, never mutated. */
+    public record Warzones(Set<String> territoryIds, List<WarzoneArea> areas) {
+        public static final Warzones EMPTY = new Warzones(Set.of(), List.of());
     }
 
     /** Nation label — name text + position (already offset) + RGB color (nation color). */
@@ -993,17 +1144,6 @@ public class AechronisMapData {
         }
     }
 
-    /** A port marker — name + position + group-derived RGB color. */
-    public static class PortInfo {
-        public final String name;
-        public final int x, z;
-        public final int color; // RGB, no alpha
-        public PortInfo(String name, int x, int z, int color) {
-            this.name = name; this.x = x; this.z = z; this.color = color;
-        }
-    }
-
-    /** A connection line between two same-group ports — endpoints + RGB color. */
     public static int rgb(int r, int g, int b) {
         return (r << 16) | (g << 8) | b;
     }

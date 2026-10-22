@@ -11,7 +11,8 @@
 	"environment": "client",
 	"entrypoints": {
 		"client": [
-			"com.dcfiendish.aechronismapmod.AechronisMapMod"
+			"com.dcfiendish.aechronismapmod.AechronisMapMod",
+			"com.dcfiendish.aechronismapmod.DevAutoTest"
 		],
 		"modmenu": [
 			"com.dcfiendish.aechronismapmod.AechronisModMenu"
@@ -26,10 +27,13 @@
 		"minecraft": "~1.21.11",
 		"java": ">=21",
 		"fabric-api": "*",
-		"xaeroplus": "*",
+		"xaeroworldmap": ">=1.46.0",
 		"cloth-config": "*"
 	},
 	"recommends": {
 		"modmenu": "*"
+	},
+	"suggests": {
+		"xaerominimap": ">=26.5.0"
 	}
 }
